@@ -193,7 +193,15 @@ class FasterWhisperEngine:
                     continue
                 start = float(seg.start) if seg.start is not None else 0.0
                 end = float(seg.end) if seg.end is not None else start + 1.0
-                out.append(TimestampedSegment(start_time=start, end_time=end, text=text))
+                
+                word_dicts = ()
+                if word_timestamps and seg.words:
+                    word_dicts = tuple(
+                        {"start": float(w.start), "end": float(w.end), "word": w.word}
+                        for w in seg.words
+                    )
+                
+                out.append(TimestampedSegment(start_time=start, end_time=end, text=text, words=word_dicts))
             return out
         except Exception as exc:
             raise TranscriptionError(f"faster-whisper inference failed: {exc}") from exc

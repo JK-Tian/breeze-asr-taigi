@@ -6,6 +6,38 @@
 
 ---
 
+## 🚀 新增：會議紀錄 Web App 啟動教學
+
+本專案現在不僅提供單機 CLI 與 Gradio 介面，更內建了完整的**會議紀錄 Web 應用程式**（支援長時間音檔批次處理與講者辨識）。
+
+### 步驟 1：啟動後端 API (FastAPI)
+這將會啟動處理音檔與 AI 模型推論的核心服務：
+```powershell
+cd backend
+# 請確保已在 backend/.env 填妥 HF_TOKEN
+uv run uvicorn src.main:app --reload --port 8000
+```
+> *(註：若連接埠衝突，也可自行更改為 `--port 8787`，並同步修改前端 API_BASE)*
+
+### 步驟 2：啟動前端介面 (Next.js)
+這將會啟動網頁使用者介面。如果您的後端不在預設的 `8000` port，您可以透過設定 `NEXT_PUBLIC_API_BASE` 環境變數來指定：
+
+**如果是 PowerShell：**
+```powershell
+cd frontend
+$env:NEXT_PUBLIC_API_BASE="http://localhost:8787/api/v1"
+pnpm dev
+```
+
+**如果是 Linux/Mac：**
+```bash
+cd frontend
+NEXT_PUBLIC_API_BASE="http://localhost:8787/api/v1" pnpm dev
+```
+啟動後，請開啟瀏覽器前往 [http://localhost:3000](http://localhost:3000) 即可開始使用！
+
+---
+
 ## 特色
 
 - **台語專用**：基於 Whisper-large-v2 微調，~10,000 小時台語資料（MediaTek 官方）。

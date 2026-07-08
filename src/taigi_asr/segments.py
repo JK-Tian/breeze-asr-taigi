@@ -16,6 +16,7 @@ class TimestampedSegment:
     start_time: float
     end_time: float
     text: str
+    words: tuple = ()  # Tuple of dicts: {"start": float, "end": float, "word": str}
 
     @staticmethod
     def format_time(seconds: float | None, srt_format: bool = False) -> str:
