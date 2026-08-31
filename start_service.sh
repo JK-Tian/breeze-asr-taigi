@@ -30,7 +30,7 @@ cd ..
 
 echo "[4/4] 正在啟動前端網頁伺服器..."
 cd frontend
-pnpm dev &
+(pnpm run build && pnpm run start) &
 FRONTEND_PID=$!
 cd ..
 
