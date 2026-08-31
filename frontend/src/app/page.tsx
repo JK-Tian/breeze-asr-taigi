@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Upload, FileAudio, Loader2, CheckCircle, XCircle, Download, Mic, Square } from "lucide-react";
+import { Upload, FileAudio, Loader2, CheckCircle, XCircle, Download, Mic, Square, RotateCcw } from "lucide-react";
 import axios from "axios";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -27,7 +27,23 @@ export default function Home() {
   const [summary, setSummary] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [isResummarizing, setIsResummarizing] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleResummarize = async () => {
+    if (!taskId) return;
+    try {
+      setIsResummarizing(true);
+      await axios.post(`${API_BASE}/transcriptions/${taskId}/resummarize`);
+      setStatus("processing");
+      setErrorMessage("");
+    } catch (err: any) {
+      console.error(err);
+      alert(`⛔ 重新生成摘要失敗：\n${err.response?.data?.detail || err.message}`);
+    } finally {
+      setIsResummarizing(false);
+    }
+  };
 
   // 當處理完成且有 taskId 時，直接使用後端提供的音檔網址，避免前端 File Blob 被瀏覽器回收造成破圖/無法播放
   const audioUrl = status === "completed" && taskId ? `${API_BASE}/transcriptions/${taskId}/audio` : "";
@@ -376,20 +392,46 @@ export default function Home() {
                 <div className="flex flex-col h-[65vh]">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-xl font-semibold text-emerald-400">會議紀錄與摘要</h3>
-                    <button
-                      onClick={() => handleDownload("summary.md", summary)}
-                      className="flex items-center space-x-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-400 text-sm rounded-md transition-colors"
-                    >
-                      <Download size={16} />
-                      <span>下載 .md</span>
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      {(summary.includes("摘要生成失敗") || !summary) && (
+                        <button
+                          onClick={handleResummarize}
+                          disabled={isResummarizing}
+                          className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-sm rounded-md transition-colors border border-amber-500/30"
+                        >
+                          <RotateCcw size={16} className={isResummarizing ? "animate-spin" : ""} />
+                          <span>重新生成摘要</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleDownload("summary.md", summary)}
+                        className="flex items-center space-x-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-400 text-sm rounded-md transition-colors"
+                      >
+                        <Download size={16} />
+                        <span>下載 .md</span>
+                      </button>
+                    </div>
                   </div>
                   <div className="flex-1 bg-slate-900/50 rounded-2xl p-6 overflow-y-auto border border-white/5">
-                    <article className="prose prose-invert prose-slate max-w-none prose-headings:text-cyan-400 prose-a:text-cyan-300">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {summary}
-                      </ReactMarkdown>
-                    </article>
+                    {summary.includes("摘要生成失敗") ? (
+                      <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
+                        <p className="text-rose-400 text-lg">{summary}</p>
+                        <button
+                          onClick={handleResummarize}
+                          disabled={isResummarizing}
+                          className="flex items-center space-x-2 px-6 py-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-semibold rounded-xl border border-amber-500/40 transition-all hover:scale-105"
+                        >
+                          <RotateCcw size={20} className={isResummarizing ? "animate-spin" : ""} />
+                          <span>重新生成摘要</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <article className="prose prose-invert prose-slate max-w-none prose-headings:text-cyan-400 prose-a:text-cyan-300">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {summary}
+                        </ReactMarkdown>
+                      </article>
+                    )}
                   </div>
                 </div>
               </div>
@@ -397,9 +439,19 @@ export default function Home() {
             )}
 
             {status === "failed" && (
-               <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-6 text-rose-200 whitespace-pre-wrap mt-4">
-                 {errorMessage}
-               </div>
+              <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-6 text-rose-200 whitespace-pre-wrap mt-4 flex flex-col md:flex-row items-center justify-between gap-4">
+                <span>{errorMessage}</span>
+                {transcript && (
+                  <button
+                    onClick={handleResummarize}
+                    disabled={isResummarizing}
+                    className="flex items-center space-x-2 px-5 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-medium rounded-xl border border-amber-500/40 transition-all shrink-0"
+                  >
+                    <RotateCcw size={18} className={isResummarizing ? "animate-spin" : ""} />
+                    <span>重新生成摘要</span>
+                  </button>
+                )}
+              </div>
             )}
           </div>
         )}

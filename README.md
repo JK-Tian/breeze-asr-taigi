@@ -39,6 +39,8 @@ NEXT_PUBLIC_API_BASE="http://localhost:8787/api/v1" pnpm dev
 > **Windows 一鍵啟動：** 亦可直接雙擊或執行根目錄下的 `start_service.bat`，系統會自動啟動 Redis、Backend API、Celery Worker、Frontend 及 HTTPS Proxy。
 > 
 > 📁 **自動歸檔成果：** 任務處理完成後，系統會自動解析會議主題，將「會議逐字稿」與「會議紀錄與摘要」儲存為 `.md` 檔案，自動依日期歸檔於根目錄 `output/YYYY-MM-DD/` 資料夾下。
+> 
+> 🔄 **一鍵重新生成摘要：** 若 LLM 摘要生成中途超時或失敗，前端介面提供「重新生成摘要」按鈕，可直接基於已有逐字稿重跑摘要。
 
 
 ---

@@ -107,3 +107,27 @@ def delete_task(task_id: str, db: Session = Depends(get_db)):
     db.delete(db_task)
     db.commit()
     return None
+
+@router.post("/transcriptions/{task_id}/resummarize", response_model=TaskStatusResponse)
+def resummarize_task(task_id: str, db: Session = Depends(get_db)):
+    db_task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    if not db_task.transcript:
+        raise HTTPException(status_code=400, detail="逐字稿尚未完成，無法重新生成摘要")
+        
+    db_task.status = "processing"
+    db_task.error_message = None
+    db.commit()
+    
+    transcription.resummarize_task.delay(task_id)
+    
+    return TaskStatusResponse(
+        id=db_task.id,
+        status="processing",
+        transcript=db_task.transcript,
+        summary=db_task.summary,
+        error_message=None,
+        created_at=db_task.created_at
+    )

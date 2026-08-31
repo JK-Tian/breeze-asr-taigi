@@ -167,6 +167,87 @@ def process_audio_task(task_id: str, file_path: str):
     finally:
         db.close()
 
+@celery_app.task(name="resummarize_task")
+def resummarize_task(task_id: str):
+    db = SessionLocal()
+    try:
+        db_task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+        if not db_task or not db_task.transcript:
+            return
+            
+        db_task.status = "processing"
+        db_task.error_message = None
+        db.commit()
+        
+        llm_url = os.environ.get("LLM_URL", os.environ.get("OLLAMA_URL", "http://192.168.1.100:11434/v1"))
+        llm_model = os.environ.get("LLM_MODEL", os.environ.get("OLLAMA_MODEL", "qwen2.5"))
+        
+        print(f"[{task_id}] Resummarizing using LLM ({llm_model}) at {llm_url}...")
+        base_prompt = get_summary_prompt()
+        prompt = f"{base_prompt}\n\n{db_task.transcript}"
+        
+        data = {
+            "model": llm_model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 65536,
+            "temperature": 0.3
+        }
+        
+        api_endpoint = f"{llm_url.rstrip('/')}/chat/completions"
+        if "v1" not in llm_url and "api/generate" not in llm_url:
+             api_endpoint = f"{llm_url.rstrip('/')}/v1/chat/completions"
+             
+        req = urllib.request.Request(
+            api_endpoint,
+            data=json.dumps(data).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=1800) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                message = result.get('choices', [{}])[0].get('message', {})
+                content = message.get('content') or ""
+                reasoning = message.get('reasoning') or ""
+                
+                if not reasoning and "<think>" in content:
+                    parts = content.split("</think>")
+                    if len(parts) == 2:
+                        reasoning = parts[0].replace("<think>", "").strip()
+                        content = parts[1].strip()
+                
+                final_summary = content
+                if not final_summary.strip():
+                    final_summary = "摘要生成失敗：模型回傳了空白結果（可能超出了 max_tokens 限制）。"
+                    
+                db_task.summary = final_summary
+        except Exception as e:
+            print(f"[{task_id}] LLM resummarization failed: {e}")
+            db_task.summary = f"摘要生成失敗: {e}"
+            
+        db_task.status = "completed"
+        db.commit()
+
+        save_output_md_files(
+            task_id=task_id,
+            original_filename=db_task.file_path,
+            transcript=db_task.transcript,
+            summary=db_task.summary
+        )
+        print(f"[{task_id}] Resummarization completed.")
+    except Exception as e:
+        db.rollback()
+        db_task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+        if db_task:
+            db_task.status = "completed"
+            db_task.summary = f"摘要生成失敗: {e}"
+            db.commit()
+        print(f"[{task_id}] Resummarization error: {e}")
+    finally:
+        db.close()
+
 def sanitize_filename(name: str) -> str:
     """過濾非法檔名字元並清理前後空白"""
     if not name:
