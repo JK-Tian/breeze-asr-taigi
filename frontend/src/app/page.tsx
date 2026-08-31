@@ -170,7 +170,7 @@ export default function Home() {
         {/* Header */}
         <div className="text-center space-y-4 pt-12">
           <h1 className="text-5xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">
-            Breeze ASR 會議紀錄
+            天工會議紀錄
           </h1>
           <p className="text-slate-400 text-lg max-w-xl mx-auto">
             上傳您的長音檔，交給聯發科 Breeze ASR 26 進行高精準度的中英台辨識與講者分離，並由 Ollama 自動生成會議摘要。
