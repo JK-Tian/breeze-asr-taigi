@@ -31,4 +31,5 @@
 - 所有非同步 I/O 操作 (如檔案讀取、資料庫寫入) 應使用 `async/await` 以不阻塞 Event Loop。
 - AI 模型載入屬高成本操作，應於 FastAPI 啟動時 (Lifespan) 或以 Singleton 模式載入，避免每次 Request 重新載入。
 - **服務啟動規範**: Windows 部署下 `start_service.bat` 預設執行 `pnpm run build && pnpm run start` 進行生產環境編譯與啟動前端，搭配 `local-ssl-proxy` 將 HTTPS (3001) 轉發至 HTTP (3002)，確保麥克風錄音功能穩定運作與權限存取。
+- **成果自動存檔規範**: 當語音轉錄與摘要任務完成（`completed`）時，系統將自動解析 LLM 產生的會議主題，並於專案根目錄 `output/YYYY-MM-DD/` 資料夾下自動寫入 `[會議名稱]_逐字稿.md` 與 `[會議名稱]_會議紀錄與摘要.md` 檔案。
 

@@ -1,6 +1,7 @@
 import uuid
 import asyncio
 import os
+import re
 import urllib.request
 import json
 from datetime import datetime, timezone
@@ -144,6 +145,15 @@ def process_audio_task(task_id: str, file_path: str):
         # 3. Update status to completed
         db_task.status = "completed"
         db.commit()
+
+        # 4. Save output MD files to output/YYYY-MM-DD/
+        save_output_md_files(
+            task_id=task_id,
+            original_filename=db_task.file_path,
+            transcript=db_task.transcript,
+            summary=db_task.summary
+        )
+
         print(f"[{task_id}] Processing completed.")
         
     except Exception as e:
@@ -156,3 +166,79 @@ def process_audio_task(task_id: str, file_path: str):
         print(f"[{task_id}] Processing failed: {str(e)}")
     finally:
         db.close()
+
+def sanitize_filename(name: str) -> str:
+    """過濾非法檔名字元並清理前後空白"""
+    if not name:
+        return ""
+    sanitized = re.sub(r'[\\/*?:"<>|\r\n\t]', '', name).strip()
+    sanitized = re.sub(r'^[#*\s]+', '', sanitized).strip()
+    return sanitized[:60]
+
+def extract_meeting_title(summary: str, fallback: str) -> str:
+    """從 LLM 生成的會議摘要中提取會議名稱/主題"""
+    if summary:
+        lines = summary.splitlines()
+        for line in lines:
+            line_str = line.strip()
+            if not line_str:
+                continue
+
+            clean_line = line_str.replace('*', '').strip()
+
+            match = re.search(r'(?:會議名稱|會議主題|主題|標題)[：:]\s*(.+)', clean_line)
+            if match:
+                extracted = match.group(1).strip()
+                clean_name = sanitize_filename(extracted)
+                if clean_name:
+                    return clean_name
+
+            if clean_line.startswith('#'):
+                extracted = clean_line.lstrip('#').strip()
+                clean_name = sanitize_filename(extracted)
+                if clean_name and clean_name not in ["會議紀錄", "會議摘要", "會議重點", "摘要"]:
+                    return clean_name
+
+    clean_fallback = sanitize_filename(fallback)
+    return clean_fallback if clean_fallback else "未命名會議"
+
+def save_output_md_files(task_id: str, original_filename: str, transcript: str, summary: str):
+    """將逐字稿與會議紀錄摘要自動儲存至 output/YYYY-MM-DD/ 目錄下的 .md 檔案"""
+    try:
+        base_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../output"))
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        date_dir = os.path.join(base_output_dir, today_str)
+        os.makedirs(date_dir, exist_ok=True)
+
+        raw_name = os.path.splitext(os.path.basename(original_filename))[0] if original_filename else f"Task_{task_id[:8]}"
+        meeting_title = extract_meeting_title(summary, raw_name)
+
+        base_filename = meeting_title
+        transcript_file = os.path.join(date_dir, f"{base_filename}_逐字稿.md")
+        summary_file = os.path.join(date_dir, f"{base_filename}_會議紀錄與摘要.md")
+
+        counter = 1
+        while os.path.exists(transcript_file) or os.path.exists(summary_file):
+            base_filename = f"{meeting_title}_{counter}"
+            transcript_file = os.path.join(date_dir, f"{base_filename}_逐字稿.md")
+            summary_file = os.path.join(date_dir, f"{base_filename}_會議紀錄與摘要.md")
+            counter += 1
+
+        with open(transcript_file, "w", encoding="utf-8") as f:
+            f.write(f"# {meeting_title} - 會議逐字稿\n\n")
+            f.write(f"- **日期**: {today_str}\n")
+            f.write(f"- **任務 ID**: {task_id}\n\n")
+            f.write("---\n\n")
+            f.write(transcript or "")
+
+        with open(summary_file, "w", encoding="utf-8") as f:
+            f.write(f"# {meeting_title} - 會議紀錄與摘要\n\n")
+            f.write(f"- **日期**: {today_str}\n")
+            f.write(f"- **任務 ID**: {task_id}\n\n")
+            f.write("---\n\n")
+            f.write(summary or "")
+
+        print(f"[{task_id}] Successfully saved output MD files to {date_dir}: {base_filename}")
+    except Exception as e:
+        print(f"[{task_id}] Failed to save output MD files: {e}")
+
