@@ -173,7 +173,7 @@ export default function Home() {
             天工會議紀錄
           </h1>
           <p className="text-slate-400 text-lg max-w-xl mx-auto">
-            上傳您的長音檔，交給聯發科 Breeze ASR 26 進行高精準度的中英台辨識與講者分離，並由 Ollama 自動生成會議摘要。
+            上傳您的長音檔，進行高精準度的中英台語音辨識與講者分離，並自動生成會議重點摘要。
           </p>
         </div>
 
