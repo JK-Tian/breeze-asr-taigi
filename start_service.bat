@@ -13,7 +13,7 @@ if %ERRORLEVEL% equ 0 (
     echo Windows Terminal detected. Opening all services in new tabs...
     wt -w "Breeze" new-tab --title BackendAPI -d "%~dp0backend" cmd /k uv run uvicorn src.main:app --reload --reload-dir src --port 8787
     wt -w "Breeze" new-tab --title CeleryWorker -d "%~dp0backend" cmd /k uv run celery -A src.infrastructure.celery_app worker --pool=solo --loglevel=info
-    wt -w "Breeze" new-tab --title Frontend -d "%~dp0frontend" cmd /k "if not exist .next (pnpm run build) & pnpm run start"
+    wt -w "Breeze" new-tab --title Frontend -d "%~dp0frontend" cmd /k "(if not exist .next pnpm run build) & pnpm run start"
     wt -w "Breeze" new-tab --title ProxyFront -d "%~dp0." cmd /k npx.cmd local-ssl-proxy --source 3001 --target 3002
     wt -w "Breeze" new-tab --title ProxyBack -d "%~dp0." cmd /k npx.cmd local-ssl-proxy --source 8788 --target 8787
 ) else (
@@ -23,7 +23,7 @@ if %ERRORLEVEL% equ 0 (
     start "Celery Worker" cmd /k "uv run celery -A src.infrastructure.celery_app worker --pool=solo --loglevel=info"
     
     cd /d "%~dp0frontend"
-    start "Frontend" cmd /k "if not exist .next (pnpm run build) & pnpm run start"
+    start "Frontend" cmd /k "(if not exist .next pnpm run build) & pnpm run start"
     
     cd /d "%~dp0"
     start "Frontend HTTPS Proxy" cmd /k "npx local-ssl-proxy --source 3001 --target 3002"
