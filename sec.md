@@ -30,3 +30,5 @@
 - **JavaScript**: 遵循 ESLint 規範，透過 `pnpm` 管理套件。
 - 所有非同步 I/O 操作 (如檔案讀取、資料庫寫入) 應使用 `async/await` 以不阻塞 Event Loop。
 - AI 模型載入屬高成本操作，應於 FastAPI 啟動時 (Lifespan) 或以 Singleton 模式載入，避免每次 Request 重新載入。
+- **服務啟動規範**: Windows 部署下 `start_service.bat` 預設執行 `pnpm run dev` 啟動前端，搭配 `local-ssl-proxy` 將 HTTPS (3001) 轉發至 HTTP (3002)，以供瀏覽器麥克風權限存取。
+

@@ -34,7 +34,10 @@ pnpm dev
 cd frontend
 NEXT_PUBLIC_API_BASE="http://localhost:8787/api/v1" pnpm dev
 ```
-啟動後，請開啟瀏覽器前往 [http://localhost:3000](http://localhost:3000) 即可開始使用！
+啟動後，請開啟瀏覽器前往 [http://localhost:3002](http://localhost:3002) （或使用 HTTPS `https://localhost:3001` 以開放麥克風權限）即可開始使用！
+
+> **Windows 一鍵啟動：** 亦可直接雙擊或執行根目錄下的 `start_service.bat`，系統會自動啟動 Redis、Backend API、Celery Worker、Frontend 及 HTTPS Proxy。
+
 
 ---
 
