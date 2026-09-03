@@ -32,5 +32,6 @@
 - AI 模型載入屬高成本操作，應於 FastAPI 啟動時 (Lifespan) 或以 Singleton 模式載入，避免每次 Request 重新載入。
 - **服務啟動規範**: Windows 部署下 `start_service.bat` 預設執行 `pnpm run build && pnpm run start` 進行生產環境編譯與啟動前端，搭配 `local-ssl-proxy` 將 HTTPS (3001) 轉發至 HTTP (3002)，確保麥克風錄音功能穩定運作與權限存取。
 - **成果自動存檔規範**: 當語音轉錄與摘要任務完成（`completed`）時，系統將自動解析 LLM 產生的會議主題，並於專案根目錄 `output/YYYY-MM-DD/` 資料夾下自動寫入 `[會議名稱]_逐字稿.md` 與 `[會議名稱]_會議紀錄與摘要.md` 檔案。
+- **逐字稿校正與品質規範**: 對於轉錄產出之逐字稿，得依據會議主題、領域專有名詞（如 AI 框架 vLLM/Ollama/SGLang、硬體設備、大廠公司名等）與同目錄摘要紀錄進行語意校正，確保逐字稿用語通順且符合會議真實內容。
 - **摘要重試規範**: 當摘要生成失敗時，後端提供 `POST /api/v1/transcriptions/{task_id}/resummarize` 路由，允許前端一鍵重新發送逐字稿給 LLM 重新生成摘要，無需重新轉錄音檔。
 
