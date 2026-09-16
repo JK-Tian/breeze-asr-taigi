@@ -30,31 +30,40 @@ def cleanup_old_files(directory: str, days: int = 30):
         print(f"Error during cleanup: {e}")
 
 @router.post("/transcriptions", response_model=TaskResponse, status_code=201)
-def upload_audio(
+async def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    # Create task
+    """接收上傳音訊或視訊檔案，非同步分塊串流寫入磁碟並發送轉錄排程。
+
+    採用非同步分塊 (Chunked Streaming) 寫入，避免大檔案傳輸時佔滿同步線程池或阻塞 Event Loop。
+    """
+    # 建立任務記錄 (pending 狀態)
     task_res = transcription.create_task(db, file.filename)
     
     # 清理大於 1 個月未變動的音檔 (背景執行)
     background_tasks.add_task(cleanup_old_files, UPLOAD_DIR, 30)
     
-    # Save file locally using task_id to prevent collision
+    # 使用 task_id 避免檔名衝突
     file_extension = os.path.splitext(file.filename)[1]
     safe_filename = f"{task_res.id}{file_extension}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
     
+    # 非同步分塊串流寫入磁碟 (1MB chunk)，保持 Event Loop 響應性
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            buffer.write(chunk)
         
-    # Update task with new safe_filename
+    # 更新任務檔案路徑
     db_task = db.query(TaskModel).filter(TaskModel.id == task_res.id).first()
     db_task.file_path = safe_filename
     db.commit()
     
-    # Schedule background processing via Celery
+    # 發送至 Celery 雙軌佇列 (自動路由至 gpu_queue)
     transcription.process_audio_task.delay(task_res.id, file_path)
     
     return task_res

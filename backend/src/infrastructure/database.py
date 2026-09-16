@@ -1,17 +1,69 @@
-from sqlalchemy import create_engine, Column, String, DateTime, Text
-from sqlalchemy.orm import declarative_base, sessionmaker
+"""資料庫連線與模型定義模組 (Clean Architecture Infrastructure Layer)。
+
+支援 PostgreSQL 企業級連線池與 SQLite 高併發 WAL (Write-Ahead Logging) 讀寫分離模式，
+杜絕多個請求同時讀寫時的 database is locked 異常。
+"""
+
+import os
 from datetime import datetime, timezone
+from sqlalchemy import create_engine, event, Column, String, DateTime, Text, Engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./transcriptions.db"
+# 預設資料庫連線路徑 (優先讀取環境變數 DATABASE_URL)
+DEFAULT_DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./transcriptions.db")
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
-)
+
+def create_app_engine(db_url: str) -> Engine:
+    """根據資料庫連線字串建立並配置最適化的資料庫引擎實例。
+
+    針對 SQLite 強制啟用 WAL (Write-Ahead Logging) 與 30 秒 busy_timeout，
+    實現無鎖讀寫分離；針對 PostgreSQL 配置高併發連線池參數。
+
+    Args:
+        db_url: 資料庫連線字串 (URL)
+
+    Returns:
+        SQLAlchemy Engine 實例
+    """
+    if db_url.startswith("sqlite"):
+        engine = create_engine(
+            db_url,
+            connect_args={"check_same_thread": False},
+        )
+
+        @event.listens_for(engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            """於每個 SQLite 連線建立時設定 WAL 與逾時參數。"""
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA busy_timeout=30000;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.close()
+
+        return engine
+
+    elif db_url.startswith("postgresql"):
+        return create_engine(
+            db_url,
+            pool_size=20,
+            max_overflow=10,
+            pool_recycle=1800,
+            pool_pre_ping=True,
+        )
+
+    return create_engine(db_url)
+
+
+# 全域共用資料庫引擎與 Session 工廠
+engine = create_app_engine(DEFAULT_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+
 class TaskModel(Base):
+    """轉錄與會議記錄任務資料表模型。"""
+
     __tablename__ = "tasks"
 
     id = Column(String, primary_key=True, index=True)
@@ -22,10 +74,14 @@ class TaskModel(Base):
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-def init_db():
+
+def init_db() -> None:
+    """初始化資料庫綱要與資料表結構。"""
     Base.metadata.create_all(bind=engine)
 
+
 def get_db():
+    """FastAPI 依賴注入 Session 產生器，確保請求結束後安全釋放連線資源。"""
     db = SessionLocal()
     try:
         yield db

@@ -8,13 +8,9 @@ import remarkGfm from "remark-gfm";
 
 const getApiBase = () => {
   if (process.env.NEXT_PUBLIC_API_BASE) return process.env.NEXT_PUBLIC_API_BASE;
-  if (typeof window !== 'undefined') {
-    const { hostname, protocol } = window.location;
-    if (protocol === 'https:') {
-      return `https://${hostname}:8788/api/v1`;
-    }
-    return `http://${hostname}:8787/api/v1`;
-  }
+  // 統一回傳同源相對路徑 /api/v1，由 Next.js rewrites 伺服器端內核轉發至後端 8787
+  // 無論是透過 http://localhost:3002 或 https://localhost:3001 (麥克風 Secure Context)，
+  // 皆維持同源請求，徹底消除對 8788 代理的依賴與瀏覽器二次證書警告
   return "/api/v1";
 };
 const API_BASE = getApiBase();

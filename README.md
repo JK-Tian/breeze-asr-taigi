@@ -94,18 +94,28 @@ raw_dir = D:/km_wiki/raw
 
 ---
 
-## 🌐 網頁服務啟動教學 (Web Application)
+## 🌐 網頁服務啟動教學 (Web Application - 企業級高併發架構)
 
-### 步驟 1：啟動後端 API (FastAPI)
-```powershell
-cd backend
-uv run uvicorn src.main:app --reload --port 8000
-```
+本專案支援一鍵啟動腳本，具備**端口殘留自動清理**、**依賴拓撲健康輪詢檢查**與**雙軌佇列高併發調度**：
 
-### 步驟 2：啟動前端介面 (Next.js)
+### 推薦：一鍵啟動完整微服務 (Windows 11)
+直接點擊執行或在命令列中執行：
 ```powershell
-cd frontend
-pnpm dev
+.\start_service.bat
 ```
-開啟瀏覽器前往 [http://localhost:3002](http://localhost:3002) 即可開始上傳視訊或音訊檔案。
-產出完成後，可直接於網頁檢視並點擊「下載 .md」下載會議記錄。
+腳本將自動執行：
+1. **端口檢查與釋放**：自動清理 8787, 3002, 3001 殘留進程。
+2. **Redis 佇列啟動與健康探針**：確保 Redis 正常響應 `PONG`。
+3. **FastAPI 高效網關啟動**：多 Worker 併發，支援非同步非阻塞大檔案串流上傳。
+4. **Celery 雙軌 Worker 啟動**：
+   - `gpu_queue`：專責 Breeze-ASR 轉寫（限流 Concurrency=1-2，杜絕 CUDA OOM）。
+   - `io_queue`：專責 LLM 錯別字校正與 video-to-notes 規格會議筆記生成（多執行緒 Concurrency=8）。
+5. **Next.js 前端與統一 HTTPS 網關**：
+   - 前端伺服器內網自動代理 `/api/*` 至後端 8787。
+   - 提供安全端點 **`https://localhost:3001`**，完整保障瀏覽器麥克風設備存取，且免除二次證書警告。
+
+### 服務訪問位址：
+- 🎙️ **主要網頁入口 (含麥克風錄音)**：[https://localhost:3001](https://localhost:3001)
+- 🖥️ **前端本機 HTTP**：[http://localhost:3002](http://localhost:3002)
+- 📑 **後端 API 規格文件**：[http://localhost:8787/docs](http://localhost:8787/docs)
+
