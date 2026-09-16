@@ -130,10 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument(
         "--audio",
+        "--media",
         "-a",
         type=Path,
         default=None,
-        help="輸入音訊檔案路徑 (支援 .mp3, .wav, .m4a, .flac 等)",
+        help="輸入音訊或視訊檔案路徑 (支援 .mp3, .wav, .m4a, .mp4, .mkv, .mov, .webm 等)",
     )
     group.add_argument(
         "--transcript",
@@ -318,13 +319,14 @@ def run_pipeline(
     if not validation["is_valid"]:
         logger.warning(f"會議記錄區塊完整性檢查未完全符合標準: {validation}")
 
-    # 6. 存檔與輸出
+    # 6. 存檔與輸出 (套用 video-to-notes 規範)
     t_file, s_file = save_meeting_outputs(
         transcript=corrected_transcript,
         summary=minutes_summary,
         output_dir=output_dir,
         meeting_name=meeting_name,
         fallback_name=fallback_title,
+        media_filename=target_file.name,
     )
 
     print("\n" + "=" * 60)

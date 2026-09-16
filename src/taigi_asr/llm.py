@@ -31,19 +31,36 @@ DEFAULT_CORRECTION_PROMPT = (
     "以下是原始逐字稿內容：\n"
 )
 
-# 預設四大區塊結構化會議紀錄提示詞
+# 預設遵循 video-to-notes 規格之六大結構化會議紀錄提示詞
 DEFAULT_MINUTES_PROMPT = (
-    "請用繁體中文，以專業「會議記錄者」的客觀視角，根據以下校正後的逐字稿整理為高規格的結構化會議紀錄。\n"
-    "請務必嚴格遵循以下 Markdown 格式輸出，且第一行必須是會議名稱：\n\n"
-    "# 會議名稱：[請提煉出簡短明確的會議核心主題]\n\n"
-    "## 【會議重點】\n"
-    "- 詳細整理會議討論的核心論點、背景與主要議題。\n\n"
-    "## 【關鍵決策】\n"
-    "- 條列會議中達成的所有明確共識、決議與結論。\n\n"
-    "## 【TODO / 行動項目】\n"
-    "- 條列具體待辦事項，格式務必包含負責人及預計完成日期（若逐字稿中未提及則寫「未提及」）。\n\n"
-    "## 【下次會議追蹤項目】\n"
-    "- 列出需要在下次會議追蹤、複查或延續討論的事項。\n\n"
+    "請用繁體中文，以專業「會議記錄者」的客觀視角，根據以下校正後的逐字稿整理為高規格的結構化商務會議記錄。\n"
+    "請務必嚴格遵循以下 Markdown 格式與章節架構輸出：\n\n"
+    "# [請提煉出簡短明確的會議核心主題]\n\n"
+    "## 1. 會議基本資訊\n"
+    "- 會議時間: [YYYY-MM-DD 或從逐字稿/時間資訊提取]\n"
+    "- 會議地點: [線上會議 (Teams / Google Meet / Zoom) 或 實體會議室]\n"
+    "- 會議主席: [會議主持人 / 主席姓名與職稱]\n"
+    "- 會議記錄: [記錄人姓名]\n"
+    "- 出席人員: [出/列席人員姓名清單，以頓號或逗號分隔]\n"
+    "- 請假人員: [缺席/請假人員名單，若無則填寫「無」]\n\n"
+    "## 2. 會議核心摘要 (Highlights)\n"
+    "- 條列 3 ~ 5 點本次會議之核心成果、關鍵進展或重大共識結論。\n\n"
+    "## 3. 關鍵決策事項 (Decisions Made)\n"
+    "| 編號 | 決策主題 | 決策內容與共識 | 提案人 / 負責人 | 生效日期 |\n"
+    "|---|---|---|---|---|\n"
+    "| D-01 | [主題] | [明確決策內容與授權共識] | [負責人] | [生效日期] |\n\n"
+    "## 4. 待辦事項清單 (Action Items / Todo List)\n"
+    "| 待辦任務項目 (Action Item) | 負責人 | 截止期限 | 當前狀態 |\n"
+    "|---|---|---|---|\n"
+    "| [具體待辦任務名稱] | [負責人] | [YYYY-MM-DD 或未提及] | 進行中 / 未開始 |\n\n"
+    "## 5. 各議題討論紀要 (Agenda & Discussions)\n"
+    "### 議題一: [議題主題名稱]\n"
+    "- 【發言人姓名 / 職稱】 [具體發言要點、觀點陳述或提問回應摘要]\n\n"
+    "## 6. 下次會議追蹤項目 (Next Meeting Follow-ups)\n"
+    "※ 以下項目列為下次會議開場之重點 Highlight 檢核項目：\n"
+    "| 追蹤項目 (Focus Item) | 預計報告人 / 負責人 | 期望產出 / 查核標準 (Deliverable) |\n"
+    "|---|---|---|\n"
+    "| [追蹤項目名稱] | [報告人] | [明確交付成果] |\n\n"
     "注意：保持客觀嚴謹，不可憑空捏造人物、日期或未提及的決議。以下為會議逐字稿：\n"
 )
 
@@ -204,25 +221,39 @@ class LLMClient:
             logger.error(f"錯別字校正請求失敗 ({exc})，優雅降級採用原始逐字稿。")
             return raw_transcript
 
+    def _build_minutes_prompt(
+        self, transcript: str, prompt_template: Optional[str] = None
+    ) -> str:
+        """組裝會議記錄提示詞。
+
+        Args:
+            transcript: 逐字稿文字。
+            prompt_template: 可選自訂模板。
+
+        Returns:
+            完整之提示詞字串。
+        """
+        base_prompt = prompt_template or DEFAULT_MINUTES_PROMPT
+        return f"{base_prompt}\n{transcript}"
+
     def generate_meeting_minutes(
         self, transcript: str, prompt_template: Optional[str] = None
     ) -> str:
-        """根據逐字稿整理出包含四大重點區塊的結構化會議記錄。
+        """根據逐字稿整理出遵循 video-to-notes 規格的結構化會議記錄。
 
         Args:
             transcript: 已校正之逐字稿內容。
             prompt_template: 可選的自訂會議記錄提示詞。
 
         Returns:
-            四大區塊結構化 Markdown 會議記錄；若出錯則回傳包含原因之降級文字。
+            結構化 Markdown 會議記錄；若出錯則回傳包含原因之降級文字。
         """
         if not transcript or not transcript.strip():
             return "逐字稿內容為空，無法進行會議記錄生成。"
 
-        base_prompt = prompt_template or DEFAULT_MINUTES_PROMPT
-        full_prompt = f"{base_prompt}\n{transcript}"
+        full_prompt = self._build_minutes_prompt(transcript, prompt_template=prompt_template)
 
-        logger.info("開始生成四大區塊結構化會議記錄...")
+        logger.info("開始生成遵循 video-to-notes 規格之結構化會議記錄...")
         try:
             minutes = self._call_chat_completion(full_prompt, temperature=0.3)
             if not minutes.strip():

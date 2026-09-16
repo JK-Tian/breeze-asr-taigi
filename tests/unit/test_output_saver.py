@@ -63,7 +63,8 @@ def test_save_output_md_files(tmp_path, monkeypatch):
 
     with open(summary_path, "r", encoding="utf-8") as f:
         content = f.read()
-        assert "系統測試會議 - 會議紀錄與摘要" in content
+        assert "title : 系統測試會議" in content
+        assert "status : inbox" in content
         assert "討論項目1" in content
 
     # 清理測試留下的檔案

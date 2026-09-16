@@ -1,10 +1,11 @@
-"""會議紀錄格式化、標題提取與輸出存檔工具模組。
+"""會議紀錄格式化、標題提取、Obsidian PKM YAML 整合與輸出存檔工具模組。
 
 提供：
 1. 檔名字元消毒與安全性過濾 (sanitize_filename)
 2. 會議主題提煉 (extract_meeting_title)
-3. 四大結構化區塊完整性檢查 (validate_meeting_minutes_sections)
-4. Markdown 檔案自動輸出存檔與同名流水號防覆蓋 (save_meeting_outputs)
+3. 結構化區塊完整性檢查 (validate_meeting_minutes_sections)
+4. 相容 video-to-notes 規格之 Obsidian PKM Markdown 格式化 (format_obsidian_meeting_notes)
+5. Markdown 檔案自動輸出存檔與同名流水號防覆蓋 (save_meeting_outputs)
 """
 
 from __future__ import annotations
@@ -51,7 +52,9 @@ def extract_meeting_title(summary: Optional[str], fallback: str = "未命名會�
         清理後的會議主題字串。
     """
     if summary:
-        lines = summary.splitlines()
+        # 先去除開頭的 YAML frontmatter (若有的話)
+        clean_text = re.sub(r"^---[\r\n]+.*?[\r\n]+---[\r\n]*", "", summary, flags=re.DOTALL)
+        lines = clean_text.splitlines()
         for line in lines:
             line_str = line.strip()
             if not line_str:
@@ -74,7 +77,7 @@ def extract_meeting_title(summary: Optional[str], fallback: str = "未命名會�
                 clean_name = sanitize_filename(extracted)
                 # 排除常見的固定章節詞彙
                 invalid_titles = [
-                    "會議紀錄", "會議摘要", "會議重點", "摘要",
+                    "會議紀錄", "會議摘要", "會議重點", "摘要", "參考資料",
                     "【會議重點】", "【關鍵決策】", "【TODO / 行動項目】", "【下次會議追蹤項目】"
                 ]
                 if clean_name and clean_name not in invalid_titles and not clean_name.startswith("【"):
@@ -85,7 +88,7 @@ def extract_meeting_title(summary: Optional[str], fallback: str = "未命名會�
 
 
 def validate_meeting_minutes_sections(markdown_text: Optional[str]) -> Dict[str, bool]:
-    """檢驗會議紀錄是否完整包含四大核心區塊。
+    """檢驗會議紀錄是否包含核心商業區塊（相容傳統四區塊與 video-to-notes 六大區塊）。
 
     Args:
         markdown_text: 會議記錄全文。
@@ -102,10 +105,10 @@ def validate_meeting_minutes_sections(markdown_text: Optional[str]) -> Dict[str,
             "is_valid": False,
         }
 
-    has_focus = "【會議重點】" in markdown_text
-    has_decisions = "【關鍵決策】" in markdown_text
-    has_todos = "【TODO" in markdown_text or "【行動項目】" in markdown_text
-    has_followups = "【下次會議追蹤項目】" in markdown_text
+    has_focus = any(kw in markdown_text for kw in ["【會議重點】", "會議核心摘要", "Highlights", "會議重點"])
+    has_decisions = any(kw in markdown_text for kw in ["【關鍵決策】", "關鍵決策事項", "Decisions Made", "關鍵決策"])
+    has_todos = any(kw in markdown_text for kw in ["【TODO", "【行動項目】", "待辦事項清單", "Action Items", "Todo List"])
+    has_followups = any(kw in markdown_text for kw in ["【下次會議追蹤項目】", "下次會議追蹤", "Next Meeting Follow-ups"])
 
     is_valid = has_focus and has_decisions and has_todos and has_followups
 
@@ -118,6 +121,77 @@ def validate_meeting_minutes_sections(markdown_text: Optional[str]) -> Dict[str,
     }
 
 
+def format_obsidian_meeting_notes(
+    summary: str,
+    media_filename: Optional[str] = None,
+    title: Optional[str] = None,
+    dt: Optional[datetime.datetime] = None,
+) -> str:
+    """將會議記錄 Markdown 包裝為符合 Obsidian PKM YAML Frontmatter 格式的標準筆記。
+
+    遵循使用者最新指定之 YAML 格式：
+    ---
+    title : {{title}}
+    description : 
+    date : {{date}} {{time}}
+    aliases : []
+    status : inbox
+    tags : 
+    Topics : 
+    Type : 
+      - 📝/✨
+    ---
+
+    原始影音檔名嚴格禁止置於 Frontmatter，統一置於文件末端：
+    # 參考資料
+    - [{{media_filename}}]
+
+    Args:
+        summary: 原始會議記錄內文。
+        media_filename: 來源音訊或視訊檔案名稱。
+        title: 會議標題（若無則自 summary 提煉）。
+        dt: 會議日期時間（預設為當前時間）。
+
+    Returns:
+        標準 Obsidian PKM 格式之 Markdown 全文。
+    """
+    now = dt or datetime.datetime.now()
+    date_str = now.strftime("%Y-%m-%d %H:%M")
+
+    meeting_title = title or extract_meeting_title(summary, fallback="會議記錄")
+    meeting_title = sanitize_filename(meeting_title) or "會議記錄"
+
+    # 1. 產生標準 YAML Frontmatter
+    frontmatter = (
+        "---\n"
+        f"title : {meeting_title}\n"
+        "description : \n"
+        f"date : {date_str}\n"
+        "aliases : []\n"
+        "status : inbox\n"
+        "tags : \n"
+        "Topics : \n"
+        "Type : \n"
+        "  - 📝/✨\n"
+        "---"
+    )
+
+    # 2. 清理正文中的舊 YAML frontmatter (避免雙重 frontmatter)
+    body = (summary or "").strip()
+    body = re.sub(r"^---[\r\n]+.*?[\r\n]+---[\r\n]*", "", body, flags=re.DOTALL).strip()
+
+    # 3. 處理文末參考資料：若已存在 # 參考資料，先移除舊的，再重新標準化附上
+    body = re.sub(r"(?:^|\n)#+\s*參考資料.*$", "", body, flags=re.DOTALL).strip()
+
+    # 4. 附加參考資料 (若有來源檔名)
+    ref_section = ""
+    if media_filename:
+        clean_filename = Path(media_filename).name
+        ref_section = f"\n\n# 參考資料\n- [{clean_filename}]"
+
+    return f"{frontmatter}\n\n{body}{ref_section}\n"
+
+
 def save_meeting_outputs(
     transcript: str,
     summary: str,
@@ -125,8 +199,9 @@ def save_meeting_outputs(
     meeting_name: Optional[str] = None,
     fallback_name: str = "未命名會議",
     task_id: Optional[str] = None,
+    media_filename: Optional[str] = None,
 ) -> Tuple[Path, Path]:
-    """將校正逐字稿與會議記錄摘要儲存為 Markdown 檔案，支援同名流水號防覆蓋。
+    """將校正逐字稿與會議記錄摘要儲存為 Markdown 檔案，支援同名流水號防覆蓋與 video-to-notes 規格。
 
     Args:
         transcript: 逐字稿文字。
@@ -135,6 +210,7 @@ def save_meeting_outputs(
         meeting_name: 指定會議名稱（若無則自動自 summary 提煉）。
         fallback_name: 備援檔案名稱。
         task_id: 可選的任務 ID。
+        media_filename: 來源影音檔案名稱（置於會議記錄末端 # 參考資料）。
 
     Returns:
         (transcript_file_path, summary_file_path) 的 Path 元組。
@@ -161,7 +237,7 @@ def save_meeting_outputs(
 
     id_header = f"- **任務 ID**: {task_id}\n\n" if task_id else "\n"
 
-    # 寫入逐字稿
+    # 1. 寫入逐字稿
     transcript_content = (
         f"# {title} - 會議逐字稿\n\n"
         f"- **日期**: {today_str}\n"
@@ -171,14 +247,12 @@ def save_meeting_outputs(
     )
     transcript_file.write_text(transcript_content, encoding="utf-8")
 
-    # 寫入會議紀錄
-    summary_content = (
-        f"# {title} - 會議紀錄與摘要\n\n"
-        f"- **日期**: {today_str}\n"
-        f"{id_header}"
-        "---\n\n"
-        f"{summary or ''}\n"
+    # 2. 格式化為符合 video-to-notes 規範的 Obsidian PKM 會議記錄
+    obsidian_summary = format_obsidian_meeting_notes(
+        summary=summary,
+        media_filename=media_filename,
+        title=title,
     )
-    summary_file.write_text(summary_content, encoding="utf-8")
+    summary_file.write_text(obsidian_summary, encoding="utf-8")
 
     return transcript_file, summary_file

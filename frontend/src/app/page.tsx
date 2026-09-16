@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Upload, FileAudio, Loader2, CheckCircle, XCircle, Download, Mic, Square, RotateCcw } from "lucide-react";
+import { Upload, FileAudio, FileVideo, Loader2, CheckCircle, XCircle, Download, Mic, Square, RotateCcw } from "lucide-react";
 import axios from "axios";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -29,6 +29,14 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isResummarizing, setIsResummarizing] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * 判定所選取或拖曳之檔案是否為視訊檔案
+   */
+  const isVideoFile = (f: File | null): boolean => {
+    if (!f) return false;
+    return f.type.startsWith("video/") || /\.(mp4|mkv|mov|webm|avi|m4v)$/i.test(f.name);
+  };
 
   const handleResummarize = async () => {
     if (!taskId) return;
@@ -135,7 +143,7 @@ export default function Home() {
   };
 
   /**
-   * 下載本機暫存之音檔（上傳失敗時保全音訊防丟失）
+   * 下載本機暫存之影音檔案（上傳失敗時保全影音防丟失）
    */
   const handleDownloadLocalAudio = () => {
     if (!file) return;
@@ -143,16 +151,17 @@ export default function Home() {
       const url = window.URL.createObjectURL(file);
       const a = document.createElement("a");
       a.href = url;
-      // 檔名採用原本音檔名稱或預設錄音檔名
-      a.download = file.name || `recording_${Date.now()}.webm`;
+      // 檔名採用原本影音名稱或預設檔名
+      const fallbackExt = isVideoFile(file) ? "mp4" : "webm";
+      a.download = file.name || `recording_${Date.now()}.${fallbackExt}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       // 及時釋放 Object URL 記憶體，防止 Memory Leak
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      console.error("下載本地音檔失敗:", err);
-      alert("音檔下載失敗，請稍後再試。");
+      console.error("下載本地影音檔案失敗:", err);
+      alert("檔案下載失敗，請稍後再試。");
     }
   };
 
@@ -222,7 +231,7 @@ export default function Home() {
             天工會議紀錄
           </h1>
           <p className="text-slate-400 text-lg max-w-xl mx-auto">
-            上傳您的長音檔，進行高精準度的中英台語音辨識與講者分離，並自動生成會議重點摘要。
+            上傳您的會議錄音或視訊會議錄影，自動進行高精準度語音辨識與講者分離，提煉符合 Obsidian PKM 規格之結構化會議記錄。
           </p>
         </div>
 
@@ -243,7 +252,7 @@ export default function Home() {
                 type="file" 
                 className="w-0 h-0 absolute opacity-0 overflow-hidden" 
                 ref={fileInputRef} 
-                accept="audio/*"
+                accept="audio/*,video/*,.mp4,.mkv,.mov,.avi,.webm,.m4v,.wav,.mp3,.m4a,.flac,.ogg"
                 onChange={(e) => {
                   if (e.target.files && e.target.files.length > 0) {
                     setFile(e.target.files[0]);
@@ -253,10 +262,12 @@ export default function Home() {
               {file ? (
                 <div className="flex flex-col items-center space-y-4">
                   <div className="p-4 bg-cyan-500/20 rounded-full text-cyan-400">
-                    <FileAudio size={40} />
+                    {isVideoFile(file) ? <FileVideo size={40} /> : <FileAudio size={40} />}
                   </div>
                   <p className="text-xl font-medium text-cyan-50">{file.name}</p>
-                  <p className="text-slate-400 text-sm">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                  <p className="text-slate-400 text-sm">
+                    {(file.size / 1024 / 1024).toFixed(2)} MB • {isVideoFile(file) ? "視訊會議錄影" : "會議音訊"}
+                  </p>
                 </div>
               ) : (
                 <div className="flex flex-col items-center space-y-4">
@@ -297,8 +308,8 @@ export default function Home() {
                     </div>
                   ) : (
                     <div className="text-center mt-4">
-                      <p className="text-xl font-medium text-slate-300">點擊麥克風錄音，或將音檔拖曳至此</p>
-                      <p className="text-slate-500 text-sm mt-2">支援網頁錄音 / MP3 / WAV / M4A</p>
+                      <p className="text-xl font-medium text-slate-300">點擊麥克風錄音，或將影音檔案拖曳至此</p>
+                      <p className="text-slate-500 text-sm mt-2">支援視訊錄影 (MP4 / MKV / MOV / WEBM) 與錄音 (MP3 / WAV / M4A)</p>
                     </div>
                   )}
                 </div>
@@ -484,19 +495,21 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* 音檔保全與操作卡片 (當本地 File 物件存在時) */}
+                {/* 影音保全與操作卡片 (當本地 File 物件存在時) */}
                 {file && (
                   <div className="bg-slate-900/60 border border-white/10 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl">
                     <div className="flex items-center space-x-4 w-full md:w-auto">
                       <div className="p-3.5 bg-cyan-500/10 rounded-2xl text-cyan-400 border border-cyan-500/20 shrink-0">
-                        <FileAudio size={36} />
+                        {isVideoFile(file) ? <FileVideo size={36} /> : <FileAudio size={36} />}
                       </div>
                       <div className="min-w-0">
                         <p className="text-lg font-semibold text-slate-100 truncate">{file.name}</p>
                         <p className="text-xs text-slate-400 mt-1 flex items-center space-x-2">
                           <span>大小：{(file.size / 1024 / 1024).toFixed(2)} MB</span>
                           <span>•</span>
-                          <span className="text-emerald-400 font-medium">音檔已暫存於瀏覽器未遺失</span>
+                          <span className="text-emerald-400 font-medium">
+                            {isVideoFile(file) ? "視訊檔案已暫存於瀏覽器未遺失" : "音檔已暫存於瀏覽器未遺失"}
+                          </span>
                         </p>
                       </div>
                     </div>
@@ -511,14 +524,14 @@ export default function Home() {
                         <span>重試一次</span>
                       </button>
 
-                      {/* 下載音檔按鈕 (防止音檔遺失) */}
+                      {/* 下載影音按鈕 (防止檔案遺失) */}
                       <button
                         onClick={handleDownloadLocalAudio}
                         className="flex items-center justify-center space-x-2 px-6 py-3 bg-emerald-600/90 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/20 transition-all hover:-translate-y-0.5 active:translate-y-0"
-                        title="將本機暫存音檔下載至電腦，避免音檔意外遺失"
+                        title={isVideoFile(file) ? "將本機暫存視訊檔案下載至電腦，避免錄影意外遺失" : "將本機暫存音檔下載至電腦，避免音檔意外遺失"}
                       >
                         <Download size={18} />
-                        <span>下載音檔</span>
+                        <span>{isVideoFile(file) ? "下載影音" : "下載音檔"}</span>
                       </button>
 
                       {/* 重新選擇按鈕 */}

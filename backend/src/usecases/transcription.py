@@ -30,6 +30,7 @@ if parent_src not in sys.path:
 from taigi_asr.llm import LLMClient
 from taigi_asr.minutes import (
     extract_meeting_title,
+    format_obsidian_meeting_notes,
     sanitize_filename,
     save_meeting_outputs,
 )
@@ -124,10 +125,16 @@ def process_audio_task(task_id: str, file_path: str):
         db_task.transcript = corrected_transcript
         db.commit()
 
-        # 3. 階段二：四區塊結構化會議記錄生成
-        logger.info(f"[{task_id}] 生成四區塊會議紀錄摘要...")
-        minutes_summary = client.generate_meeting_minutes(corrected_transcript)
-        db_task.summary = minutes_summary
+        # 3. 階段二：結構化會議記錄生成 (遵循 video-to-notes 規範)
+        logger.info(f"[{task_id}] 生成結構化會議紀錄摘要...")
+        raw_minutes_summary = client.generate_meeting_minutes(corrected_transcript)
+        # 包裝為 Obsidian PKM YAML Frontmatter 格式與文末參考資料
+        media_name = os.path.basename(db_task.file_path) if db_task.file_path else f"Task_{task_id[:8]}"
+        obsidian_summary = format_obsidian_meeting_notes(
+            summary=raw_minutes_summary,
+            media_filename=media_name,
+        )
+        db_task.summary = obsidian_summary
 
         # 4. 更新任務為 completed
         db_task.status = "completed"
@@ -170,8 +177,13 @@ def resummarize_task(task_id: str):
 
         client = get_llm_client()
         logger.info(f"[{task_id}] 重新生成會議記錄摘要...")
-        minutes_summary = client.generate_meeting_minutes(db_task.transcript)
-        db_task.summary = minutes_summary
+        raw_minutes_summary = client.generate_meeting_minutes(db_task.transcript)
+        media_name = os.path.basename(db_task.file_path) if db_task.file_path else f"Task_{task_id[:8]}"
+        obsidian_summary = format_obsidian_meeting_notes(
+            summary=raw_minutes_summary,
+            media_filename=media_name,
+        )
+        db_task.summary = obsidian_summary
         db_task.status = "completed"
         db.commit()
 
@@ -208,6 +220,7 @@ def save_output_md_files(task_id: str, original_filename: str, transcript: str, 
             output_dir=date_dir,
             fallback_name=raw_name,
             task_id=task_id,
+            media_filename=original_filename,
         )
         logger.info(f"[{task_id}] 成功儲存輸出 MD 檔案: {t_file.name}, {s_file.name}")
     except Exception as e:
