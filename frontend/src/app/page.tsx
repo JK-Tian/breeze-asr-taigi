@@ -134,6 +134,31 @@ export default function Home() {
     }
   };
 
+  /**
+   * 下載本機暫存之音檔（上傳失敗時保全音訊防丟失）
+   */
+  const handleDownloadLocalAudio = () => {
+    if (!file) return;
+    try {
+      const url = window.URL.createObjectURL(file);
+      const a = document.createElement("a");
+      a.href = url;
+      // 檔名採用原本音檔名稱或預設錄音檔名
+      a.download = file.name || `recording_${Date.now()}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // 及時釋放 Object URL 記憶體，防止 Memory Leak
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("下載本地音檔失敗:", err);
+      alert("音檔下載失敗，請稍後再試。");
+    }
+  };
+
+  /**
+   * 發送音檔上傳至後端伺服器，若失敗則完整保留 File 物件供重試或下載
+   */
   const handleUpload = async () => {
     if (!file) return;
     const formData = new FormData();
@@ -141,13 +166,21 @@ export default function Home() {
 
     try {
       setStatus("uploading");
+      setErrorMessage("");
       const res = await axios.post(`${API_BASE}/transcriptions`, formData);
       setTaskId(res.data.id);
       setStatus("pending");
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error("音檔上傳失敗:", err);
       setStatus("failed");
-      setErrorMessage("上傳失敗，請確認後端是否運作中。");
+      const detail = err.response?.data?.detail;
+      if (detail) {
+        setErrorMessage(`上傳失敗：${detail}`);
+      } else if (err.code === "ERR_NETWORK" || !err.response) {
+        setErrorMessage("上傳失敗：無法連線至後端伺服器，請確認伺服器是否啟動或網路是否暢通。");
+      } else {
+        setErrorMessage(`上傳失敗 (${err.response?.status || err.message || "連線異常"})。音檔已在瀏覽器本機暫存未遺失，請點擊下方按鈕重試或下載備份。`);
+      }
     }
   };
 
@@ -310,13 +343,15 @@ export default function Home() {
                     {status === "pending" && "已加入佇列"}
                     {status === "processing" && "AI 模型處理中 (可能需要幾分鐘)..."}
                     {status === "completed" && "處理完成"}
-                    {status === "failed" && "處理失敗"}
+                    {status === "failed" && (taskId ? "任務處理失敗" : "音檔上傳失敗")}
                   </h2>
-                  <p className="text-slate-400 text-sm font-mono mt-1">Task ID: {taskId}</p>
+                  <p className="text-slate-400 text-sm font-mono mt-1">
+                    {taskId ? `Task ID: ${taskId}` : (file ? `檔案：${file.name} (已暫存未遺失)` : "連線中斷")}
+                  </p>
                 </div>
               </div>
               
-              {status === "completed" && (
+              {(status === "completed" || status === "failed") && (
                 <button
                   onClick={() => {
                     setFile(null);
@@ -326,9 +361,9 @@ export default function Home() {
                     setSummary("");
                     setErrorMessage("");
                   }}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-300 transition-colors"
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-300 transition-colors border border-white/5"
                 >
-                  處理下一筆
+                  {status === "completed" ? "處理下一筆" : "返回重新選擇"}
                 </button>
               )}
             </div>
@@ -439,17 +474,81 @@ export default function Home() {
             )}
 
             {status === "failed" && (
-              <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-6 text-rose-200 whitespace-pre-wrap mt-4 flex flex-col md:flex-row items-center justify-between gap-4">
-                <span>{errorMessage}</span>
-                {transcript && (
-                  <button
-                    onClick={handleResummarize}
-                    disabled={isResummarizing}
-                    className="flex items-center space-x-2 px-5 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-medium rounded-xl border border-amber-500/40 transition-all shrink-0"
-                  >
-                    <RotateCcw size={18} className={isResummarizing ? "animate-spin" : ""} />
-                    <span>重新生成摘要</span>
-                  </button>
+              <div className="space-y-6 mt-4">
+                {/* 錯誤原因警示條 */}
+                <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-6 text-rose-200 flex items-start space-x-4 shadow-lg shadow-rose-500/5">
+                  <XCircle className="text-rose-400 shrink-0 mt-0.5" size={24} />
+                  <div className="flex-1 space-y-1">
+                    <p className="font-bold text-rose-300 text-base">操作未能成功完成：</p>
+                    <p className="text-sm text-rose-200/90 leading-relaxed whitespace-pre-wrap">{errorMessage}</p>
+                  </div>
+                </div>
+
+                {/* 音檔保全與操作卡片 (當本地 File 物件存在時) */}
+                {file && (
+                  <div className="bg-slate-900/60 border border-white/10 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl">
+                    <div className="flex items-center space-x-4 w-full md:w-auto">
+                      <div className="p-3.5 bg-cyan-500/10 rounded-2xl text-cyan-400 border border-cyan-500/20 shrink-0">
+                        <FileAudio size={36} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-lg font-semibold text-slate-100 truncate">{file.name}</p>
+                        <p className="text-xs text-slate-400 mt-1 flex items-center space-x-2">
+                          <span>大小：{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                          <span>•</span>
+                          <span className="text-emerald-400 font-medium">音檔已暫存於瀏覽器未遺失</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-end">
+                      {/* 重試一次按鈕 */}
+                      <button
+                        onClick={handleUpload}
+                        className="flex items-center justify-center space-x-2 px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold rounded-xl shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition-all hover:-translate-y-0.5 active:translate-y-0"
+                      >
+                        <RotateCcw size={18} />
+                        <span>重試一次</span>
+                      </button>
+
+                      {/* 下載音檔按鈕 (防止音檔遺失) */}
+                      <button
+                        onClick={handleDownloadLocalAudio}
+                        className="flex items-center justify-center space-x-2 px-6 py-3 bg-emerald-600/90 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/20 transition-all hover:-translate-y-0.5 active:translate-y-0"
+                        title="將本機暫存音檔下載至電腦，避免音檔意外遺失"
+                      >
+                        <Download size={18} />
+                        <span>下載音檔</span>
+                      </button>
+
+                      {/* 重新選擇按鈕 */}
+                      <button
+                        onClick={() => {
+                          setFile(null);
+                          setTaskId(null);
+                          setStatus("idle");
+                          setErrorMessage("");
+                        }}
+                        className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm transition-colors border border-white/5"
+                      >
+                        重新選擇
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 若本地無 file 但已有 taskId 與逐字稿 (後端摘要失敗場景) */}
+                {!file && transcript && (
+                  <div className="flex justify-end">
+                    <button
+                      onClick={handleResummarize}
+                      disabled={isResummarizing}
+                      className="flex items-center space-x-2 px-5 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-medium rounded-xl border border-amber-500/40 transition-all"
+                    >
+                      <RotateCcw size={18} className={isResummarizing ? "animate-spin" : ""} />
+                      <span>重新生成摘要</span>
+                    </button>
+                  </div>
                 )}
               </div>
             )}

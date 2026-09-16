@@ -33,6 +33,10 @@
    - 一般可調整參數（如提示詞模板、滑動視窗等）則放置於 `config.ini`。
 5. **KM Wiki 同步寫入容錯**:
    - 若指定之 KM Wiki raw 資料夾不可寫入或網路磁碟中斷，系統記錄 Warning Log 且不中斷主要流程。
+6. **前端音檔記憶體保全與防遺失 (Client Audio Resilience & Leak Prevention)**:
+   - 網頁端麥克風錄音產生之音訊及選取之音檔暫存於瀏覽器記憶體中。
+   - 上傳失敗時，前端嚴格禁止自動銷毀 File 物件，必須提供一鍵重試及 Blob 本機下載功能，確保使用者寶貴錄音不遺失。
+   - 點擊下載時透過 `URL.createObjectURL` 建立臨時連結，並在觸發下載後立即調用 `URL.revokeObjectURL` 釋放瀏覽器記憶體資源，防止長時間使用產生 Memory Leak。
 
 ## 開發規範
 - **Python**: 遵循 PEP8 規範，透過 `uv` 管理套件。

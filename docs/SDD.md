@@ -53,6 +53,7 @@ constraints:
   - 系統必須提供獨立 Python 腳本 (scripts/transcribe_and_summarize.py)，支援在命令列以 script 直接執行轉會議紀錄。
   - 金鑰與伺服器位址必須設定於 .env 與 config.ini 中，禁止硬編碼 (Hardcoding)；設定優先順序為 CLI 參數 > .env > config.ini > 預設值。
   - 若 LLM 服務發生網路超時或例外狀況，系統 MUST 採取優雅降級 (Graceful Degradation)，保留原始文字並回報明確警示，不可崩潰。
+  - 前端上傳音檔若遭遇連線中斷、超時或伺服器異常，系統 MUST 完整保全瀏覽器端音檔物件，且 MUST 提供「重試一次」與「下載音檔」功能，確保使用者錄音或選取之檔案絕不遺失。
 ```
 
 ---
@@ -192,11 +193,46 @@ classDiagram
     TranscriptionUseCase --> LLMClient : 調用
 ```
 
+### 2.5 前端上傳容錯與音檔保全狀態圖 (State Diagram)
+```mermaid
+stateDiagram-v2
+    [*] --> Idle: 使用者進入首頁
+    Idle --> Recording: 點擊麥克風錄音
+    Recording --> Idle: 完成錄音 (產生本地 File 物件)
+    Idle --> Idle: 拖曳或選取音訊檔案 (產生 File 物件)
+
+    Idle --> Uploading: 點擊「開始轉錄會議紀錄」
+    Uploading --> Pending: 上傳成功 (取得 taskId)
+    Uploading --> Failed: 上傳失敗 (網路中斷/超時/5xx錯誤)
+
+    state Failed {
+        [*] --> ErrorView: 顯示錯誤卡片
+        ErrorView --> LocalDownload: 點擊「下載音檔」(觸發 URL.createObjectURL)
+        ErrorView --> RetryUpload: 點擊「重試一次」(沿用保留之 File 物件)
+        ErrorView --> ResetIdle: 點擊「重新選擇」(重設狀態為 idle)
+    }
+
+    RetryUpload --> Uploading: 重新發送上傳請求
+    ResetIdle --> Idle: 清空並返回上傳區
+
+    Pending --> Processing: 後端 Celery 處理中
+    Processing --> Completed: 轉寫與會議記錄生成完成
+    Processing --> Failed: 後端處理失敗 (提供伺服器音檔下載與重試)
+    Completed --> [*]
+```
+
 ---
 
 ## 3. Steps (核心步驟流程 - RFC2119 規範)
 
-1. **參數解析與配置載入**：
+1. **前端音檔接收與保全階段**：
+   - 使用者透過檔案選擇、拖曳或網頁麥克風錄音產生之音訊檔案，前端 **MUST** 妥善保存於記憶體狀態（`File` 物件）中。
+   - 在上傳請求發起直至確認成功前，前端 **MUST NOT** 提前釋放或清空 `file` 物件。
+   - 若上傳請求失敗（發生 Network Error、HTTP 4xx/5xx 或逾時），前端 **MUST** 切換至 `failed` 狀態並完整保留 `file` 物件。
+   - 前端 **MUST** 提供「下載音檔」按鈕，允許使用者直接觸發瀏覽器下載本機音訊（使用 `URL.createObjectURL`），防止因頁面重新整理或斷線造成錄音資料永久遺失。
+   - 前端 **MUST** 提供「重試一次」按鈕，點擊後 **MUST** 直接利用現有 `file` 物件重新觸發上傳流程，無需使用者重複操作選取或重新錄音。
+
+2. **參數解析與配置載入**：
    - 執行腳本時，系統 **MUST** 檢查命令列參數，至少提供 `--audio` 或 `--transcript` 其中一項。
    - 系統 **MUST** 依優先順序（CLI 參數 > `.env` > `config.ini` > 預設值）載入 `LLM_CORRECTION_URL`、`LLM_MODEL` 及 `timeout`。
 
@@ -238,6 +274,7 @@ classDiagram
 | **EC-3: 逐字稿過長或為空** | 逐字稿為空文字，或長度超過模型上下文窗口上限 | 若逐字稿為空，系統 **MUST** 立即終止後續 LLM 呼叫並提醒「逐字稿為空，無需校正與生成紀錄」；若超長，系統 **SHOULD** 支援段落切割或於提示詞截斷保護。 |
 | **EC-4: 會議名稱提煉失敗或包含非法檔名字元** | 第一行未包含 `# 會議名稱：` 或字串含有 `\ / : * ? " < > \|` | 系統 **MUST** 使用 `sanitize_filename` 消除非法符號；若無會議名稱，**MUST** 自動退回以輸入檔名或日期時間作為檔案名稱。 |
 | **EC-5: KM Wiki raw 資料夾無法存取** | 指定之 `KM_WIKI_RAW_DIR` 不存在、權限不足或網路中斷 | 系統 **MUST** 捕捉 `IOError` 並印出 Warning Log，**MUST NOT** 中斷本地輸出流程。 |
+| **EC-6: 前端音檔上傳中斷或伺服器異常** | 上傳音檔發送 POST /api/v1/transcriptions 時網路斷線、請求逾時或後端回傳 5xx / 413 等錯誤 | 前端 **MUST** 捕捉例外進入 `failed` 狀態，且 **MUST NOT** 清空已選取或錄製之 `File` 物件；系統 **MUST** 於錯誤卡片呈現「重試一次」按鈕供立即重試，並 **MUST** 提供「下載音檔」按鈕以觸發瀏覽器下載本地音檔備份，防止音檔遺失。 |
 
 ---
 
