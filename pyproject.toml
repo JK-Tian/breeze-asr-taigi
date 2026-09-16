@@ -44,6 +44,7 @@ dependencies = [
     # pull the CPU wheel by default on `pip install`, silently defeating the
     # GPU optimisation this project is built for.
     "faster-whisper>=1.1.0",
+    "onnxruntime<1.24; python_version < '3.11'",
     "soundfile>=0.12",
     "pydub>=0.25",
     "numpy>=1.24",
@@ -75,9 +76,10 @@ Issues = "https://github.com/thc1006/breeze-asr-taigi/issues"
 [project.scripts]
 taigi-asr = "taigi_asr.cli:main"
 taigi-asr-ui = "taigi_asr.ui.launcher:main"
+taigi-minutes = "scripts.transcribe_and_summarize:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/taigi_asr"]
+packages = ["src/taigi_asr", "scripts"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "-ra", "--strict-markers"]
