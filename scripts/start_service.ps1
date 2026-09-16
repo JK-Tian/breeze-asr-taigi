@@ -95,11 +95,22 @@ Write-Host ""
 # 步驟 2/4：檢查並啟動 Redis 訊息佇列
 # ------------------------------------------------------------------------------
 Write-Host "[步驟 2/4] 檢查並啟動 Redis 訊息佇列 (Docker)..." -ForegroundColor Yellow
+# 檢查並啟動 Redis 容器
 $dockerCheck = docker ps -q --filter "name=breeze-redis" 2>$null
 if (-not $dockerCheck) {
     docker start breeze-redis 2>$null
     if ($LASTEXITCODE -ne 0) {
         docker run -d --name breeze-redis -p 6379:6379 redis:alpine 2>$null
+    }
+}
+
+# 檢查並啟動 PostgreSQL 容器 (breeze-postgres)
+$pgCheck = docker ps -q --filter "name=breeze-postgres" 2>$null
+if (-not $pgCheck) {
+    $pgExists = docker ps -a -q --filter "name=breeze-postgres" 2>$null
+    if ($pgExists) {
+        Write-Host "  -> 偵測到 breeze-postgres 容器處於停止狀態，正在自動啟動..." -ForegroundColor Magenta
+        docker start breeze-postgres 2>$null
     }
 }
 
