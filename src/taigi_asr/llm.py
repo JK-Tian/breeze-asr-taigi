@@ -153,7 +153,7 @@ class LLMClient:
         self.model = self.fallback_model
         return self.fallback_model
 
-    def _call_chat_completion(self, prompt: str, temperature: float = 0.3) -> str:
+    def _chat_completion(self, prompt: str, temperature: float = 0.3) -> str:
         """內部呼叫 /v1/chat/completions 發送請求並回傳乾淨文字。
 
         Args:
@@ -191,6 +191,10 @@ class LLMClient:
             content = message.get("content") or ""
             return clean_think_tags(content)
 
+    def _call_chat_completion(self, prompt: str, temperature: float = 0.3) -> str:
+        """內部請求別名，向下相容呼叫。"""
+        return self._chat_completion(prompt, temperature=temperature)
+
     def correct_transcript(
         self, raw_transcript: str, prompt_template: Optional[str] = None
     ) -> str:
@@ -212,7 +216,7 @@ class LLMClient:
 
         logger.info("開始執行逐字稿語意錯別字校正...")
         try:
-            corrected = self._call_chat_completion(full_prompt, temperature=0.2)
+            corrected = self._chat_completion(full_prompt, temperature=0.2)
             if not corrected.strip():
                 logger.warning("模型回傳空白校正內容，降級保留原始逐字稿。")
                 return raw_transcript
@@ -222,28 +226,48 @@ class LLMClient:
             return raw_transcript
 
     def _build_minutes_prompt(
-        self, transcript: str, prompt_template: Optional[str] = None
+        self,
+        transcript: str,
+        prompt_template: Optional[str] = None,
+        visual_context: Optional[str] = None,
     ) -> str:
-        """組裝會議記錄提示詞。
+        """組裝會議記錄提示詞，支援注入音視雙模態視覺上下文。
 
         Args:
             transcript: 逐字稿文字。
             prompt_template: 可選自訂模板。
+            visual_context: 多模態視覺時間軸摘要 (由 VLM 分析關鍵畫面所得)。
 
         Returns:
             完整之提示詞字串。
         """
         base_prompt = prompt_template or DEFAULT_MINUTES_PROMPT
-        return f"{base_prompt}\n{transcript}"
+        parts = [base_prompt]
+
+        if visual_context and visual_context.strip():
+            visual_block = (
+                "\n\n### 會議簡報與視覺畫面時間軸紀錄\n"
+                "以下為從會議影片中自動擷取之關鍵畫面與投影片重點，請結合語音逐字稿與此視覺資訊進行綜合分析，"
+                "修正語音中的專有名詞/同音字，並將投影片中的關鍵指標、圖表數據融入會議核心摘要、關鍵決策與議題紀要中：\n"
+                f"{visual_context.strip()}"
+            )
+            parts.append(visual_block)
+
+        parts.append(f"\n\n### 會議逐字稿內容：\n{transcript.strip()}")
+        return "\n".join(parts)
 
     def generate_meeting_minutes(
-        self, transcript: str, prompt_template: Optional[str] = None
+        self,
+        transcript: str,
+        prompt_template: Optional[str] = None,
+        visual_context: Optional[str] = None,
     ) -> str:
-        """根據逐字稿整理出遵循 video-to-notes 規格的結構化會議記錄。
+        """根據逐字稿整理出遵循 video-to-notes 規格的結構化會議記錄，支援視覺上下文整合。
 
         Args:
             transcript: 已校正之逐字稿內容。
             prompt_template: 可選的自訂會議記錄提示詞。
+            visual_context: 多模態視覺畫面時間軸資訊。
 
         Returns:
             結構化 Markdown 會議記錄；若出錯則回傳包含原因之降級文字。
@@ -251,11 +275,13 @@ class LLMClient:
         if not transcript or not transcript.strip():
             return "逐字稿內容為空，無法進行會議記錄生成。"
 
-        full_prompt = self._build_minutes_prompt(transcript, prompt_template=prompt_template)
+        full_prompt = self._build_minutes_prompt(
+            transcript, prompt_template=prompt_template, visual_context=visual_context
+        )
 
         logger.info("開始生成遵循 video-to-notes 規格之結構化會議記錄...")
         try:
-            minutes = self._call_chat_completion(full_prompt, temperature=0.3)
+            minutes = self._chat_completion(full_prompt, temperature=0.3)
             if not minutes.strip():
                 return "摘要生成失敗：模型回傳了空白結果（可能超出上下文窗口）。"
             return minutes

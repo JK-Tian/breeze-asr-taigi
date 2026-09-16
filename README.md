@@ -12,18 +12,22 @@
    - 支援純音訊 (`.mp3`, `.wav`, `.m4a`, `.flac`, `.ogg` 等)。
    - 支援線上視訊會議錄影 (`.mp4`, `.mkv`, `.mov`, `.webm`, `.avi` 等)，自動透過 FFmpeg 分離提取音訊並標準化。
    - 支援網頁端直接麥克風錄音收音。
-2. **ASR 語音轉錄與講者分離**：透過 Breeze-ASR-26 與 Pyannote 進行長音檔轉錄與講者辨識。
-3. **語意錯別字校正 (LLM 8002/v1)**：自動將逐字稿送至 `http://192.168.1.100:8002/v1` 模型，根據前後文語意修復錯別字、同音異字與專有名詞，同時完整保留講者代號與時間戳記。
-4. **符合 video-to-notes 規格之結構化會議記錄 (.md)**：
+2. **多模態關鍵幀視覺理解 (Video VLM Pipeline)**：
+   - 針對視訊會議錄影檔，自動以 FFmpeg 智慧偵測投影片換頁與場景切換，擷取關鍵畫面。
+   - 整合內網多模態視覺模型（預設 `http://192.168.1.100:11434` / `qwen3.8:27b`），深度提煉簡報標題、圖表數據與重要展示內容。
+   - 貫徹「零截圖純淨排版」與「看完即忘」安全原則，推論結束即刻抹除暫存畫面，文字化融入會議筆記。
+3. **ASR 語音轉錄與講者分離**：透過 Breeze-ASR-26 與 Pyannote 進行長音檔轉錄與講者辨識。
+4. **語意錯別字校正 (LLM 8002/v1)**：自動將逐字稿送至 `http://192.168.1.100:8002/v1` 模型，根據前後文語意修復錯別字、同音異字與專有名詞，同時完整保留講者代號與時間戳記。
+5. **符合 video-to-notes 規格之結構化會議記錄 (.md)**：
    - 不論語音或影片轉出的會議記錄，皆產出標準 `.md` 檔案。
    - 開頭宣告 Obsidian PKM YAML Frontmatter。
    - 文末 `# 參考資料` 標記原始影音檔案來源。
-   - 六大商務結構：基本資訊、核心摘要 (Highlights)、關鍵決策事項 (Decisions Made 表格)、待辦事項清單 (Action Items / Todo List 表格)、各議題討論紀要 (Agenda & Discussions，標註【發言人】)、下次會議追蹤項目 (Next Meeting Follow-ups 表格)。
-5. **雙重執行入口**：
+   - 六大商務結構：基本資訊、核心摘要 (Highlights 含簡報圖表數據)、關鍵決策事項 (Decisions Made 表格)、待辦事項清單 (Action Items / Todo List 表格)、各議題討論紀要 (Agenda & Discussions，標註【發言人】)、下次會議追蹤項目 (Next Meeting Follow-ups 表格)。
+6. **雙重執行入口**：
    - 獨立 Script 命令列工具 (`scripts/transcribe_and_summarize.py`)。
    - 現代化 Web 介面 (Next.js + FastAPI)，支援影音線上播放、Markdown 結構化預覽與 `.md` 一鍵下載。
-6. **上傳失敗影音雙重保全機制**：網頁錄音或檔案上傳遭遇網路中斷或伺服器異常時，前端自動保全影音，提供「一鍵重試」與「下載影音備份」按鈕，防止寶貴會議影音意外遺失。
-7. **KM Wiki raw 資料夾自動同步**：可將處理完成之檔案自動同步複製至指定的 KM Wiki raw 目錄中。
+7. **上傳失敗影音雙重保全機制**：網頁錄音或檔案上傳遭遇網路中斷或伺服器異常時，前端自動保全影音，提供「一鍵重試」與「下載影音備份」按鈕，防止寶貴會議影音意外遺失。
+8. **KM Wiki raw 資料夾自動同步**：可將處理完成之檔案自動同步複製至指定的 KM Wiki raw 目錄中。
 
 ---
 
@@ -72,6 +76,10 @@ LLM_CORRECTION_MODEL=auto
 LLM_URL=http://192.168.1.100:8002/v1
 LLM_MODEL=auto
 
+# =============== 多模態視覺模型 (VLM 視訊投影片理解) ===============
+VLM_URL=http://192.168.1.100:11434
+VLM_MODEL=qwen3.8:27b
+
 # =============== KM Wiki 自動同步設定 ===============
 KM_WIKI_ENABLED=true
 KM_WIKI_RAW_DIR=D:/km_wiki/raw
@@ -86,6 +94,14 @@ correction_model = auto
 [MeetingMinutes]
 minutes_url = http://192.168.1.100:8002/v1
 minutes_model = auto
+
+[Vision]
+enabled = true
+vlm_url = http://192.168.1.100:11434
+vlm_model = qwen3.8:27b
+scene_threshold = 0.3
+min_interval_seconds = 15
+max_keyframes = 30
 
 [KMWiki]
 enabled = true

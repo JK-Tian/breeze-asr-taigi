@@ -104,3 +104,10 @@ test_mp3_transcript.*
 tmp/
 temp/
 *.tmp
+
+# Local SQLite DB & output directories
+*.db
+*.db-shm
+*.db-wal
+output/
+output_defect_report.md

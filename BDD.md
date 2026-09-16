@@ -1,5 +1,5 @@
 # 行為驅動規格書 (Behavior Driven Development - BDD.md)
-## 天工會議紀錄：企業級高併發與端點整合驗收場景
+## 天工會議紀錄：多模態視訊會議理解驗收場景
 
 ---
 
@@ -7,60 +7,57 @@
 
 ```yaml
 parameters:
-  system_under_test: "天工會議紀錄系統 (Breeze ASR Taigi - High Concurrency Edition)"
+  system_under_test: "天工會議紀錄系統 (Multimodal Vision & Audio Edition)"
   test_environment:
     os: "Windows 11"
     python_env: "uv run (Python 3.10+)"
-    node_env: "pnpm 9+ (Node.js 20+)"
-  concurrency_targets:
-    api_concurrent_requests: 50
-    large_file_uploads: 5
-    transcription_queue_capacity: 100
-  endpoints:
-    secure_frontend: "https://localhost:3001"
-    internal_frontend: "http://localhost:3002"
-    backend_api: "http://localhost:8787"
+  vlm_endpoints:
+    vllm_url: "http://192.168.1.100:8000/v1"
+    default_model: "auto"
+  supported_video_formats:
+    - ".mp4"
+    - ".mkv"
+    - ".mov"
+    - ".webm"
+    - ".avi"
 ```
 
 ---
 
 ## 2. 核心行為驗收場景 (Gherkin Scenarios)
 
-### 場景 1：多使用者同時上傳影音，API 不阻塞狀態查詢 (Non-blocking I/O)
-* **Given** 系統正常啟動，FastAPI 後端以多 Workers 運行，資料庫處於 WAL 模式
-* **When** 5 位企業使用者同時發送 500MB 大音視訊檔案上傳請求 (`POST /api/v1/transcriptions`)
-* **And** 另有 20 位使用者在此期間持續發送任務狀態查詢請求 (`GET /api/v1/transcriptions/{id}`)
-* **Then** 狀態查詢請求 **MUST** 在 50ms 內迅速獲得 HTTP 200 回應，**MUST NOT** 發生 Connection Timeout 或 504 逾時
-* **And** 5 筆上傳請求 **MUST** 成功寫入磁碟並回傳 HTTP 201 與 `task_id`，任務依序排入佇列
+### 場景 1：視訊會議關鍵幀智慧擷取與簡報換頁偵測
+* **Given** 使用者上傳了一個包含簡報投影片展示的會議錄影檔案 (`meeting.mp4`)
+* **When** 系統啟動關鍵幀擷取器 (`KeyframeExtractor`)
+* **Then** 系統 **MUST** 透過 FFmpeg 場景切換演算法自動識別出簡報切換的時間點
+* **And** 擷取之影像幀 **MUST** 縮放為標準尺寸 (`1280x720`) 以兼顧辨識率與推論效率
+* **And** 擷取數量 **MUST NOT** 超過設定之最大上限 (預設 30 張)，每張畫面均帶有對應之會議時間戳
 
-### 場景 2：GPU 轉錄佇列限流，徹底防止顯存溢位 (Prevent CUDA OOM)
-* **Given** Redis 啟用 `gpu_queue` 與 `io_queue` 雙軌佇列，GPU Worker 設定 `concurrency=1`
-* **When** 佇列中同時累積了 5 個長達 1 小時之高音質視訊會議任務
-* **Then** GPU Worker **MUST** 每次只處理 1 個任務，依序呼叫 Breeze-ASR 模型推論
-* **And** GPU 顯存使用率 **MUST NOT** 超出單卡上限，系統 **MUST NOT** 產生 `CUDA Out of Memory` 崩潰
-* **And** 當單一任務之 ASR 轉錄完成後，該任務 **MUST** 立即被轉移至 `io_queue`，釋放 GPU 轉入下一個待轉寫任務
+### 場景 2：多模態 VLM 萃取投影片核心數據與決策標記
+* **Given** 關鍵幀擷取器成功抽取出多張投影片 JPEG 畫面
+* **When** 系統調用多模態 VLM 客戶端 (`VLMClient`) 向 `http://192.168.1.100:11434` 發送分析請求
+* **Then** 模型 **MUST** 辨識出畫面上的投影片標題、關鍵業績數字 (如 KPI, 預算, 達成率) 與圖表趨勢
+* **And** 輸出結構化為包含時間標記的視覺時間軸文字摘要 (`VisualTimeline`)
 
-### 場景 3：I/O 佇列多並發處理 LLM 錯別字校正與會議摘要
-* **Given** 多個任務已完成 ASR 轉錄，處於逐字稿校正與摘要生成階段
-* **When** 3 位使用者同時對既有會議點擊「重新生成摘要」(`POST /api/v1/transcriptions/{id}/resummarize`)
-* **And** 同時有 2 個新任務進入 LLM 處理階段
-* **Then** I/O Worker 透過多執行緒池 (`concurrency=8`) **MUST** 同時向外部 LLM 端點發起並行請求
-* **And** 各任務處理進度獨立，互不卡頓，產出符合 `video-to-notes` 規範之 Obsidian Markdown 會議筆記
+### 場景 3：音視雙模態融合生成高階商務會議筆記
+* **Given** 語音轉錄管線已產出 ASR 逐字稿，且視覺管線已產出時間軸簡報摘要
+* **When** 提煉引擎將語音逐字稿與視覺摘要共同傳入 LLM 會議記錄模型
+* **Then** 模型 **MUST** 對照投影片上的專有名詞修正語音同音錯別字
+* **And** 產出之會議記錄【會議核心摘要 (Highlights)】與【議題討論紀要】中，**MUST** 包含投影片展示之具體數據結論（即使發言人口頭未逐字提及）
+* **And** 產出之 Markdown 文件 **MUST** 嚴格遵循 `skills/video-to-notes` 的 Obsidian PKM YAML Frontmatter 格式
 
-### 場景 4：單一 HTTPS 入口取用麥克風設備與同源 API 請求
-* **Given** 使用者使用瀏覽器開啟 `https://localhost:3001`
-* **When** 使用者在網頁上點擊「開始麥克風錄音」按鈕
-* **Then** 瀏覽器 **MUST** 成功辨識 Secure Context 並彈出麥克風錄音授權許可，**MUST NOT** 提示「瀏覽器封鎖了麥克風 API」
-* **When** 錄音完畢點擊上傳
-* **Then** 前端發送相對路徑 `/api/v1/transcriptions` 請求，由 Next.js 伺服器端內網無縫代理至 `8787`
-* **And** 瀏覽器 **MUST NOT** 彈出針對 8788 的二次證書警告，上傳流程 **MUST** 一鍵順暢完成
+### 場景 4：零截圖純淨排版與看完即忘清理機制 (Zero-screenshot & Ephemeral)
+* **Given** 視覺理解管線已完成所有關鍵幀的多模態推論與摘要整理
+* **When** 系統完成 Obsidian Markdown 會議筆記寫入
+* **Then** 系統 **MUST** 立即清空並刪除暫存目錄下的所有截圖檔案
+* **And** 產出之 Markdown 檔案中 **MUST NOT** 包含任何圖片語法 (`![]()`)，維持純淨文字商務排版
+* **And** 檔案最末端 **MUST** 正確收錄 `# 參考資料` 並標註原始影片來源
 
-### 場景 5：啟動腳本端口自我清理與相依順序保障
-* **Given** 系統背景殘留有先前未釋放的 Node.js 或 Python 進程（例如佔用 port 3002 或 8787）
-* **When** 管理員執行 `start_service.bat`
-* **Then** 腳本 **MUST** 在啟動前主動釋放殘留連接埠
-* **And** 腳本 **MUST** 依序檢查 Redis (PONG) -> Backend (200) -> Celery -> Frontend (3002) -> SSL Proxy (3001)
-* **And** 啟動過程中 **MUST NOT** 出現 `listen EADDRINUSE` 或 `ECONNREFUSED` 錯誤
+### 場景 5：純音訊或多模態服務異常時的平滑自適應降級 (Graceful Fallback)
+* **Given** 使用者上傳了一個純音訊檔案 (`audio.mp3`)，或視訊檔案的影像軌損壞，或 VLM 伺服器暫時斷線
+* **When** 系統偵測到無法提取影像畫面或呼叫 VLM 遭遇逾時
+* **Then** 系統 **MUST** 捕捉例外並記錄友善日誌，自動平滑降級至純語音轉錄流程
+* **And** 任務狀態 **MUST NOT** 崩潰為 `failed`，最終仍順利產出完整的會議記錄
 
 ---
 
@@ -69,23 +66,23 @@ parameters:
 ```yaml
 parameters:
   inputs:
-    - test_suite: "tests/test_high_concurrency.py"
-    - sample_audio: "tests/fixtures/sample.wav"
+    - test_suite: "tests/unit/test_keyframe_extractor.py"
+    - test_suite_vlm: "tests/unit/test_vlm_client.py"
+    - test_suite_multimodal: "tests/unit/test_multimodal_minutes.py"
   outputs:
     - test_report: "pytest_results.xml"
-    - memory_leak_check: "pass"
 ```
 
 #### Steps (RFC2119 關鍵字)
-1. 測試套件 **MUST** 在單元測試中模擬多線程同時向 SQLite WAL 執行讀取與寫入，驗證零鎖定異常。
-2. 測試套件 **MUST** 驗證 `api.py` 的檔案上傳端點採用非同步非阻塞方式接收檔案。
-3. 測試套件 **MUST** 驗證 Celery 的任務路由表將 ASR 任務導向 `gpu_queue`、將 LLM/Summary 任務導向 `io_queue`。
-4. 前端測試 **MUST** 驗證 `getApiBase()` 在任何協定下均統一回傳 `/api/v1`，完全消除 8788。
+1. 測試套件 **MUST** 在單元測試中模擬 FFmpeg 輸出，驗證關鍵幀擷取與時間戳計算正確性。
+2. 測試套件 **MUST** 模擬 VLM 回傳結構化視覺文字，驗證 VisualTimeline 解析無誤。
+3. 測試套件 **MUST** 驗證多模態 Prompt 注入後，生成的會議筆記滿足 video-to-notes 規範。
+4. 測試套件 **MUST** 驗證清理函式在成功與失敗兩種情況下均能確實抹除暫存截圖。
 
 #### Error Handling (異常與邊界處理)
 
 | 編號 | 異常條件 (Criteria) | 系統行動 (Action) |
 | :--- | :--- | :--- |
-| **EH-01** | 連線資料庫發生併發交易超時 (`OperationalError`) | 系統 **MUST** 觸發自適應重試機制 (Exponential Backoff, 最大 3 次)，若仍失敗 **MUST** 拋出清楚之交易衝突錯誤並回滾交易。 |
-| **EH-02** | 外部 LLM API (8002) 回應超時或掛起 | I/O Worker **MUST** 在 1800 秒連線超時後終止連線，降級使用原始 ASR 逐字稿生成簡化筆記，**MUST NOT** 無限期卡住線程。 |
-| **EH-03** | 前端錄音時使用者拒絕麥克風權限 (`NotAllowedError`) | 前端 **MUST** 彈出友善操作提示指導使用者於瀏覽器網址列重新開啟麥克風權限，**MUST NOT** 導致介面進入凍結狀態。 |
+| **EH-01** | VLM 服務回應格式非 JSON 或缺少預期欄位 | 系統 **MUST** 採取防禦性字串清洗，降級為純文字解析，**MUST NOT** 造成反序列化崩潰。 |
+| **EH-02** | 視訊時間軸長度異常 (0 秒或負數) | 擷取器 **MUST** 拒絕處理並回傳空清單，觸發平滑降級。 |
+| **EH-03** | 暫存目錄權限不足無法刪除 | 清理模組 **MUST** 捕捉 `PermissionError`，記錄警示並於下一次啟動時標記待清理，**MUST NOT** 阻斷主流程完成。 |

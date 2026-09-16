@@ -1,0 +1,18 @@
+[project]
+name = "srt-transcriber"
+version = "0.2.0"
+description = "旗艦版影音轉字幕逐字稿工具 (支援多模型、繁體中文與台語特化)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "faster-whisper>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

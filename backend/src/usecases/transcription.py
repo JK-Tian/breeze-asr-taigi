@@ -34,6 +34,7 @@ from taigi_asr.minutes import (
     sanitize_filename,
     save_meeting_outputs,
 )
+from taigi_asr.vision import KeyframeExtractor, VLMClient
 
 logger = logging.getLogger("transcription_usecase")
 
@@ -67,6 +68,33 @@ def get_llm_client() -> LLMClient:
     return LLMClient(base_url=llm_url, model=llm_model, timeout=1800)
 
 
+def get_vlm_client() -> VLMClient:
+    """從設定檔與環境變數取得 VLMClient 實例。"""
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../config.ini"))
+    vlm_url = "http://192.168.1.100:8000/v1"
+    vlm_model = "Qwen/Qwen3.8-27B-FP8"
+    vlm_timeout = 60
+
+    if os.path.exists(config_path):
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(config_path, encoding="utf-8")
+            if "Vision" in parser:
+                vision_cfg = parser["Vision"]
+                vlm_url = vision_cfg.get("vlm_url", vlm_url)
+                vlm_model = vision_cfg.get("vlm_model", vlm_model)
+                vlm_timeout = int(vision_cfg.get("vlm_timeout", vlm_timeout))
+        except Exception as e:
+            logger.warning(f"讀取 config.ini [Vision] 失敗: {e}")
+
+    # 環境變數優先
+    vlm_url = os.environ.get("VLM_URL", vlm_url)
+    vlm_model = os.environ.get("VLM_MODEL", vlm_model)
+    vlm_timeout = int(os.environ.get("VLM_TIMEOUT", vlm_timeout))
+
+    return VLMClient(base_url=vlm_url, model=vlm_model, timeout=vlm_timeout)
+
+
 def create_task(db: Session, filename: str) -> TaskResponse:
     """建立新上傳音訊的轉錄任務記錄。"""
     task_id = str(uuid.uuid4())
@@ -84,7 +112,7 @@ def create_task(db: Session, filename: str) -> TaskResponse:
 
 @celery_app.task(name="process_audio")
 def process_audio_task(task_id: str, file_path: str):
-    """Celery 背景任務：音訊轉換、ASR 轉寫、LLM 錯別字校正、四區塊會議紀錄整理與檔案歸檔。"""
+    """Celery 背景任務：多模態視覺分析、音訊轉換、ASR 轉寫、LLM 錯別字校正、雙模態會議記錄整理與檔案歸檔。"""
     db = SessionLocal()
     try:
         # 1. 更新狀態為 processing
@@ -94,6 +122,28 @@ def process_audio_task(task_id: str, file_path: str):
 
         db_task.status = "processing"
         db.commit()
+
+        # 檢查原始檔案是否為影片，並進行多模態關鍵畫面擷取與 VLM 分析
+        visual_context: Optional[str] = None
+        raw_media_path = file_path
+        extractor = KeyframeExtractor()
+
+        if extractor.is_video_file(raw_media_path):
+            logger.info(f"[{task_id}] 偵測到影片檔案，啟動多模態關鍵幀擷取與 VLM 視覺分析...")
+            keyframes = []
+            try:
+                keyframes = extractor.extract_keyframes(raw_media_path)
+                if keyframes:
+                    logger.info(f"[{task_id}] 擷取到 {len(keyframes)} 張關鍵幀，交由視覺模型分析...")
+                    vlm_client = get_vlm_client()
+                    visual_context = vlm_client.analyze_keyframes(keyframes)
+            except Exception as vlm_exc:
+                logger.warning(f"[{task_id}] 多模態視覺分析異常 ({vlm_exc})，平滑降級為純音訊摘要流程。")
+                visual_context = None
+            finally:
+                # 零截圖純淨排版與看完即忘原則：推論完成或異常時立即抹除暫存畫面
+                if keyframes:
+                    extractor.cleanup_keyframes(keyframes)
 
         # 確保音訊可於網頁播放 (轉換為 mp3)
         mp3_file_path = os.path.splitext(file_path)[0] + ".mp3"
@@ -125,11 +175,13 @@ def process_audio_task(task_id: str, file_path: str):
         db_task.transcript = corrected_transcript
         db.commit()
 
-        # 3. 階段二：結構化會議記錄生成 (遵循 video-to-notes 規範)
-        logger.info(f"[{task_id}] 生成結構化會議紀錄摘要...")
-        raw_minutes_summary = client.generate_meeting_minutes(corrected_transcript)
+        # 3. 階段二：音視雙模態結構化會議記錄生成 (遵循 video-to-notes 規範)
+        logger.info(f"[{task_id}] 生成結構化會議紀錄摘要 (結合視覺時間軸: {visual_context is not None})...")
+        raw_minutes_summary = client.generate_meeting_minutes(
+            corrected_transcript, visual_context=visual_context
+        )
         # 包裝為 Obsidian PKM YAML Frontmatter 格式與文末參考資料
-        media_name = os.path.basename(db_task.file_path) if db_task.file_path else f"Task_{task_id[:8]}"
+        media_name = os.path.basename(raw_media_path) if raw_media_path else (os.path.basename(db_task.file_path) if db_task.file_path else f"Task_{task_id[:8]}")
         obsidian_summary = format_obsidian_meeting_notes(
             summary=raw_minutes_summary,
             media_filename=media_name,

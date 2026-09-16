@@ -1,0 +1,7 @@
+[project]
+name = "video-screenshot"
+version = "0.1.0"
+description = "A simple video screeshot tool using ffmpeg"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
