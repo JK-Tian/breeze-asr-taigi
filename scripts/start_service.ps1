@@ -1,13 +1,13 @@
 ﻿# ==============================================================================
 # 天工會議紀錄 (Breeze ASR Taigi) - 服務啟動管理器
-# 企業級高併發架構 | 雙軌佇列分流 | 端口衝突自動清理
+# 企業級高併發架構 | 雙軌佇列分流 | 端口衝突自動清理 | 環境缺失套件自動檢查修復
 # ==============================================================================
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "   天工會議紀錄 (Breeze ASR Taigi) - 服務啟動管理器" -ForegroundColor Cyan
-Write-Host "   企業級高併發架構 | 雙軌佇列分流 | 端口衝突自動清理" -ForegroundColor Cyan
+Write-Host "   企業級高併發架構 | 雙軌佇列分流 | 環境自癒檢查" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -16,6 +16,58 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $rootDir = (Resolve-Path "$scriptDir\..").Path
 $backendDir = Join-Path $rootDir "backend"
 $frontendDir = Join-Path $rootDir "frontend"
+
+# ------------------------------------------------------------------------------
+# 步驟 0/4：執行環境自檢與缺失套件自動修復 (Self-healing Environment Check)
+# ------------------------------------------------------------------------------
+Write-Host "[步驟 0/4] 檢查執行環境與 Python / Node.js 套件完整性..." -ForegroundColor Yellow
+
+# 檢查 uv 工具
+$hasUv = Get-Command uv -ErrorAction SilentlyContinue
+if (-not $hasUv) {
+    Write-Host "  -> [錯誤] 系統未安裝 uv 套件管理工具，請先安裝 uv！" -ForegroundColor Red
+    pause
+    exit 1
+}
+
+# 檢查 Python 關鍵後端依賴套件 (fastapi, uvicorn, celery, redis, psycopg2)
+Write-Host "  -> 檢查 Python 核心依賴套件 (FastAPI, Celery, psycopg2, 等)..."
+$pyCheck = & uv run python -c "import fastapi, uvicorn, celery, redis, psycopg2" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  -> 偵測到缺失 Python 依賴套件，正在透過 uv 自動同步安裝中..." -ForegroundColor Magenta
+    Push-Location $rootDir
+    & uv sync
+    Pop-Location
+    Write-Host "  -> Python 套件安裝同步完成！" -ForegroundColor Green
+} else {
+    Write-Host "  -> Python 核心依賴套件已完備。" -ForegroundColor Green
+}
+
+# 檢查前端 node_modules 與 pnpm
+$hasPnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+if ($hasPnpm) {
+    $frontModules = Join-Path $frontendDir "node_modules"
+    if (-not (Test-Path $frontModules)) {
+        Write-Host "  -> 偵測到前端 node_modules 不存在，正在透過 pnpm install 自動安裝..." -ForegroundColor Magenta
+        Push-Location $frontendDir
+        & pnpm install
+        Pop-Location
+        Write-Host "  -> 前端套件安裝完成！" -ForegroundColor Green
+    } else {
+        Write-Host "  -> 前端 node_modules 依賴已完備。" -ForegroundColor Green
+    }
+}
+
+# 檢查前端 .next 構建輸出
+$frontNext = Join-Path $frontendDir ".next"
+if (-not (Test-Path $frontNext)) {
+    Write-Host "  -> 首次啟動偵測：正在自動進行前端最佳化建置 (pnpm build)..." -ForegroundColor Magenta
+    Push-Location $frontendDir
+    & pnpm run build
+    Pop-Location
+    Write-Host "  -> 前端建置完成！" -ForegroundColor Green
+}
+Write-Host ""
 
 # ------------------------------------------------------------------------------
 # 步驟 1/4：啟動前連接埠檢查與自動清理 (Pre-flight Sanitization)
@@ -79,7 +131,7 @@ Write-Host "[步驟 3/4] 編排並啟動微服務矩陣..." -ForegroundColor Yel
 
 $cmdApi = "uv run uvicorn src.main:app --port 8787"
 $cmdCelery = "uv run celery -A src.infrastructure.celery_app worker -Q gpu_queue,io_queue --pool=threads -c 8 --loglevel=info"
-$cmdFront = "(if not exist .next pnpm run build) & start /b pnpm run start & cd .. & npx.cmd local-ssl-proxy --source 3001 --target 3002"
+$cmdFront = "start /b pnpm run start & cd .. & npx.cmd local-ssl-proxy --source 3001 --target 3002"
 
 $hasWt = Get-Command wt.exe -ErrorAction SilentlyContinue
 

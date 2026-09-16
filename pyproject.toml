@@ -50,6 +50,7 @@ dependencies = [
     "numpy>=1.24",
     "gradio>=4.44",
     "huggingface-hub>=0.24",
+    "psycopg2-binary>=2.9.13",
 ]
 
 [project.optional-dependencies]
