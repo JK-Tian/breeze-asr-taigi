@@ -1,155 +1,186 @@
 # 系統設計規格書 (System Design Document - SDD.md)
-## 天工會議紀錄：多模態關鍵幀抽取與 VLM 視訊理解整合管線
+## 天工會議紀錄：KM Wiki Minutes 知識庫 raw 檔區自動同步與音視雙模態整合管線
 
 ---
 
-## 1. 系統架構與選型 (Multimodal Architecture & Selection)
+## 1. 系統架構與選型 (Architecture & Tech Stack)
 
-本系統擴充為**音視雙模態 (Audio-Visual Multimodal) 會議紀錄平台**。針對企業視訊會議錄影檔（MP4、MKV、MOV 等），系統整合了 **Breeze-ASR 語音辨識** 與 **多模態視覺模型 (VLM)**，在抽取音訊轉錄的同時，自動偵測投影片切換並抽取關鍵畫面，透過內網 VLM 提煉簡報標題、圖表數據與展示重點，並與語音逐字稿深度融合，產出符合 `skills/video-to-notes` 規範之高品質結構化會議記錄。
+本系統為**企業級會議智能分析與知識庫自動化平台**。除了多模態語音辨識與投影片關鍵幀理解外，進一步擴充 **KM Wiki 自動同步服務**。當音訊或視訊會議完成轉錄校正與 Obsidian PKM 結構化會議筆記提煉後，系統會自動將「會議逐字稿 (`.md`)」與「會議紀錄 (`.md`)」同步發布至內部 KM Wiki 的 **Minutes 知識庫之 raw 檔區**（預設為 `D:/km_wiki/Minutes/raw`），以供企業知識庫索引引擎即時檢索與入庫。
 
-### 1.1 多模態處理管線架構圖 (Multimodal Pipeline Architecture)
+### 1.1 系統脈絡與管線架構圖 (Context & Pipeline Architecture)
 
 ```mermaid
 flowchart TD
-    Video[("視訊會議錄影檔\n(.mp4 / .mkv / .mov)")] --> Extractor["1. 關鍵幀擷取器\n(KeyframeExtractor / FFmpeg)"]
-    Video --> AudioSplit["2. 音訊分離提取\n(Audio Extraction / FFmpeg -vn)"]
-
-    subgraph VisualPipeline [視覺理解管線 (Visual Pipeline)]
-        Extractor -->|"場景切換偵測 (scene > 0.3)\n定時步長取樣 (15s)"| Frames[("暫存關鍵幀 JPEGs\n(1280x720 輕量化)")]
-        Frames --> VLMClient["VLM 多模態客戶端\n(http://192.168.1.100:8000/v1)"]
-        VLMClient -->|"模型: Qwen/Qwen3.8-27B-FP8 (vLLM)"| VisualSummary[("時間軸視覺摘要 (VisualTimeline)\n- 投影片標題與章節\n- 圖表具體關鍵數據\n- 畫面發言人與展示重點")]
-        VisualSummary --> Cleanup["看完即忘清理機制\n(自動安全刪除暫存截圖)"]
+    User([企業使用者 / Web / CLI]) --> Ingress["統一入口 (Web / Script)"]
+    Ingress --> Process["轉錄與會議記錄處理核心 (ASR + LLM + VLM)"]
+    
+    subgraph OutputPipeline [持久化儲存管線]
+        Process --> LocalArchive["1. 本地歸檔 (output/YYYY-MM-DD/)\n- [會議名稱]_逐字稿.md\n- [會議名稱]_會議紀錄與摘要.md"]
+        LocalArchive --> KMWikiSync["2. KM Wiki 同步服務 (KMWikiService)"]
     end
 
-    subgraph AudioPipeline [語音處理管線 (Audio Pipeline)]
-        AudioSplit --> ASR["Breeze-ASR 模型推論\n(gpu_queue / 限流 Concurrency=1)"]
-        ASR --> RawTranscript[("原始語音逐字稿\n(帶時間戳與講者代號)")]
+    subgraph KMWikiStorage [KM Wiki 系統 / 知識庫架構]
+        KMWikiSync --> KMConfig{"檢查 [KMWiki] enabled"}
+        KMConfig -- true --> PathResolve["解析目標目錄 (raw_dir: D:/km_wiki/Minutes/raw)\n若 date_subfolder=true 則建立 YYYY-MM-DD 子目錄"]
+        KMConfig -- false --> Skip["略過同步"]
+        
+        PathResolve --> Verify["檔案寫入與同名安全性檢查"]
+        Verify --> RawStorage[("Minutes 知識庫 raw 檔區\n(Minutes/raw/YYYY-MM-DD/)")]
+        RawStorage --> KMIndexer["KM 企業搜尋與知識庫索引器"]
     end
 
-    subgraph FusionEngine [雙模態融合與提煉引擎 (Fusion & Minutes Engine)]
-        RawTranscript --> Fusion["雙模態交叉校正與結構化提煉\n(LLM: 192.168.1.100:8002/v1)"]
-        VisualSummary --> Fusion
-        Fusion --> Notes[("Obsidian PKM 會議記錄 (.md)\n- YAML Frontmatter\n- Highlights (含簡報數據)\n- 決策事項表格\n- 待辦清單表格\n- 議題討論紀要 (標記【發言人】)\n- 下次會議追蹤表格\n- 文末 # 參考資料")]
+    subgraph RestAPI [Web 控制與管理 API (Controller)]
+        KMWikiSync -.-> SyncStatus[("任務同步狀態紀錄 (TaskModel.km_wiki_synced)")]
+        User --> ManualSync["POST /api/v1/transcriptions/{id}/sync-km-wiki"]
+        ManualSync --> KMWikiSync
     end
 ```
 
-### 1.2 多模態處理序列圖 (Sequence Diagram)
+### 1.2 KM Wiki 同步處理序列圖 (Sequence Diagram)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as 企業使用者
-    participant Web as Web 網關 (FastAPI / 8787)
-    participant Worker as Celery 雙軌運算工作者
-    participant Extractor as FFmpeg 關鍵幀擷取器
-    participant ASR as Breeze-ASR 模型 (GPU)
-    participant VLM as 多模態模型 (vLLM Qwen3.8-27B-FP8)
-    participant LLM as 會議記錄模型 (vLLM Qwen3.6)
-    participant Output as 歸檔模組 (output/ .md)
+    participant API as FastAPI Router (/api/v1)
+    participant Worker as Celery 運算工作者
+    participant Minutes as 會議記錄生成模組
+    participant LocalSaver as 本地存檔模組 (save_meeting_outputs)
+    participant KMSync as KM Wiki 同步服務 (KMWikiService)
+    participant FileSys as KM Wiki 磁碟/網路共享 (Minutes/raw)
 
-    User->>Web: 上傳視訊會議錄影 (meeting.mp4)
-    Web->>Worker: 派發非同步雙軌任務 (process_audio_task)
-    
-    par 音訊與視覺平行處理
-        Worker->>ASR: 抽取音訊並執行語音辨識與講者分離
-        ASR-->>Worker: 回傳原始逐字稿 (帶講者時間戳)
-    and 視覺關鍵幀與多模態理解
-        Worker->>Extractor: 偵測簡報切換，擷取關鍵畫面
-        Extractor-->>Worker: 回傳時間軸關鍵幀清單 (JPEGs)
-        loop 每張關鍵幀
-            Worker->>VLM: POST 畫面進行多模態商務解析
-            VLM-->>Worker: 萃取投影片標題、圖表數據與關鍵結論
-        end
-        Worker->>Worker: 執行暫存截圖清理 (看完即忘，釋放磁碟)
+    Worker->>Minutes: 完成逐字稿校正與 Obsidian 會議記錄提煉
+    Worker->>LocalSaver: 儲存至 output/YYYY-MM-DD/
+    LocalSaver-->>Worker: 回傳本機檔案路徑 (t_file, s_file)
+
+    Worker->>KMSync: sync_task_outputs(t_file, s_file, date_str)
+    activate KMSync
+    KMSync->>KMSync: 檢查 enabled、目標目錄權限與路徑消毒
+    alt 啟用且目標路徑正常
+        KMSync->>FileSys: 建立 Minutes/raw/YYYY-MM-DD/ 目錄
+        KMSync->>FileSys: 安全複製逐字稿與會議記錄 .md
+        FileSys-->>KMSync: 寫入完成
+        KMSync-->>Worker: 回傳 SyncResult (success=True, paths=[...])
+    else 磁碟離線或無權限 (異常情況)
+        KMSync-->>Worker: 捕捉例外並記錄 Warning，回傳 SyncResult (success=False, error=msg)
     end
+    deactivate KMSync
 
-    Worker->>LLM: 雙模態融合生成 (逐字稿 + 時間軸簡報資訊)
-    LLM-->>Worker: 提煉符合 video-to-notes 規範之會議筆記
-    Worker->>Output: 儲存 [會議名稱]_會議紀錄與摘要.md
-    Worker-->>User: 任務狀態更新為 completed
+    Worker->>Worker: 更新 DB 任務狀態為 completed (km_wiki_synced=result.success)
+    Worker-->>User: 前端接收完成通知與 KM Wiki 同步狀態標籤
 ```
 
 ---
 
-## 2. 標準作業程序規範 (SOP Generation Protocol)
+## 2. 流程標準作業規範 (SOP Generation Protocol - RFC2119)
 
-### 2.1 流程參數宣告 (Parameters)
+### 2.1 parameters (YAML 屬性宣告)
 
 ```yaml
 parameters:
   inputs:
-    - name: video_file_path
-      type: string
+    task_id:
+      type: string (UUID)
       required: true
-      description: "輸入之視訊會議錄影檔案路徑 (.mp4, .mkv, .mov 等)"
-    - name: vlm_url
+      description: "後端任務唯一識別代碼"
+    transcript_file_path:
+      type: string (FilePath)
+      required: true
+      description: "本機已生成之校正逐字稿 Markdown 檔案絕對路徑"
+    summary_file_path:
+      type: string (FilePath)
+      required: true
+      description: "本機已生成之 Obsidian PKM 會議記錄 Markdown 檔案絕對路徑"
+    meeting_title:
       type: string
-      default: "http://192.168.1.100:8000/v1"
-      description: "多模態視覺模型端點 (vLLM OpenAI 相容 API)"
-    - name: vlm_model
-      type: string
-      default: "auto"
-      description: "多模態視覺模型名稱 (預設 auto 自動辨識 Qwen/Qwen3.8-27B-FP8)"
-    - name: scene_threshold
-      type: float
-      default: 0.3
-      description: "FFmpeg 簡報換頁切換敏感度 (0.0 ~ 1.0)"
-    - name: min_interval_seconds
-      type: integer
-      default: 15
-      description: "關鍵幀擷取最小間隔時間 (秒)，避免過密截圖"
-    - name: max_keyframes
-      type: integer
-      default: 30
-      description: "單一會議最多擷取之關鍵幀上限"
+      required: false
+      description: "消毒後之會議主題名稱"
+    meeting_date:
+      type: string (YYYY-MM-DD)
+      required: false
+      description: "會議日期，若無則預設當前日期"
   outputs:
-    - name: visual_timeline
-      type: list[dict]
-      description: "包含時間戳、投影片標題、圖表數據之結構化視覺摘要"
-    - name: multimodal_meeting_notes
-      type: string
-      description: "融合發言與簡報數據之 Obsidian PKM 規格 Markdown 會議筆記"
+    km_wiki_synced:
+      type: boolean
+      description: "是否成功同步至 KM Wiki Minutes 知識庫 raw 檔區"
+    synced_files:
+      type: list of string
+      description: "成功寫入 KM Wiki raw 檔區之目標檔案完整路徑清單"
+    error_message:
+      type: string or null
+      description: "同步失敗時之具體錯誤訊息（供排查），成功時為 null"
   constraints:
-    - "嚴格遵循零截圖原則：產出之 Markdown 文件 MUST NOT 包含實體截圖，視覺資料必須文字化萃取"
-    - "看完即忘原則：VLM 分析完畢後 MUST 立即刪除所有本機暫存截圖，防止磁碟洩漏"
-    - "平滑降級原則：若影片無影像軌或 VLM 連線逾時，MUST 自動回退為純音訊轉錄，流程 MUST NOT 中斷"
+    target_knowledge_base: "Minutes"
+    target_subfolder: "raw"
+    default_base_path: "D:/km_wiki/Minutes/raw"
+    character_encoding: "UTF-8"
+    file_format: "Markdown (.md)"
+    isolation_level: "Non-blocking Graceful Degradation"
 ```
 
-### 2.2 核心步驟流程 (Steps - RFC2119 Protocol)
+### 2.2 Steps (核心步驟流程 - RFC2119)
 
-1. 系統 **MUST** 檢驗輸入檔案副檔名。若為視訊格式（`.mp4`、`.mkv`、`.mov`、`.webm`、`.avi`），**MUST** 觸發多模態管線；若為純音訊格式（`.mp3`、`.wav`、`.m4a`），**MUST** 跳過視覺分析直接執行語音轉錄。
-2. 關鍵幀擷取器 **MUST** 透過 `ffmpeg` 使用場景切換演算法 (`select='gt(scene,0.3)'`) 偵測投影片換頁，並將畫面縮放至 `1280x720` 以平衡解析度與推論效能。
-3. 關鍵幀數量 **SHOULD NOT** 超過 `max_keyframes` 設定值（預設 30 張），以控制 VLM 總體推論時間與網路負載。
-4. VLM 客戶端 **MUST** 將關鍵幀轉為 Base64 格式傳入多模態模型端點，Prompt **MUST** 強制要求聚焦於：**投影片核心主題、圖表具體數據、決策標示與發言人標籤**。
-5. 多模態視覺摘要 **MUST** 結構化組織為時間軸標籤（例如 `[00:05:20] 投影片：Q3 業績指標 (營收成長 15%)`）。
-6. 分析完畢後，清理模組 **MUST** 立即安全抹除所有本機暫存影像檔案。
-7. 提煉引擎 **MUST** 將視覺摘要與 ASR 語音逐字稿合併，調用 LLM 生成符合 `skills/video-to-notes` 六大維度的 Obsidian Markdown 會議筆記。
+1. **STEP 1: 讀取並解析 KM Wiki 組態**
+   - 系統 **MUST** 依序自環境變數 (`KM_WIKI_ENABLED`, `KM_WIKI_RAW_DIR`, `KM_WIKI_DATE_SUBFOLDER`) 與 `config.ini` 之 `[KMWiki]` 區塊讀取組態。
+   - 若 `enabled` 為 `false`，系統 **MUST** 跳過同步流程並回傳未啟用狀態，**MUST NOT** 產生非預期例外。
+   - `raw_dir` 預設值 **MUST** 為 `D:/km_wiki/Minutes/raw`。
 
-### 2.3 異常與邊界處理 (Error Handling)
+2. **STEP 2: 路徑安全性驗證與目錄建立**
+   - 系統 **MUST** 使用 `sanitize_filename` 檢驗與過濾檔案名稱，**MUST NOT** 允許任何路徑遍歷字元（如 `..`、根目錄跳脫等）。
+   - 若啟用 `date_subfolder`，目標路徑 **SHOULD** 為 `{raw_dir}/{YYYY-MM-DD}/`。
+   - 系統 **MUST** 遞迴檢查並自動建立目標目錄 (`mkdir(parents=True, exist_ok=True)`)。
 
-| 編號 | 異常情境 (Edge Case) | 觸發條件 (Criteria) | 對應行動 (Action) |
-| :--- | :--- | :--- | :--- |
-| **EH-01** | 視訊無有效影像軌或靜態黑畫面 | FFmpeg 抽取關鍵幀失敗，或產出之影像幀數量為 0 | 系統 **MUST** 記錄除錯日誌，自動標記 `visual_timeline = ""`，並 **MUST** 繼續執行標準 Breeze-ASR 音訊轉錄，**MUST NOT** 拋出例外中斷任務。 |
-| **EH-02** | 外部 VLM 服務連線超時或崩潰 | 呼叫 Ollama / VLM 端點逾時 (超過 180 秒) 或回應 HTTP 5xx | 系統 **MUST** 捕捉 `TimeoutError` 或 `URLError`，記錄警告訊息，平滑降級使用純語音逐字稿進行會議筆記提煉，**MUST NOT** 造成 Celery Worker 重啟或任務失敗。 |
-| **EH-03** | 視訊長度過長導致關鍵幀爆炸 | 會議錄影長達 3 小時以上，偵測到的場景切換大於 100 處 | 系統 **MUST** 啟動均勻抽樣機制 (Decimation Filter)，強制只保留最重要的 `max_keyframes` 幀畫面，**MUST NOT** 無限制呼叫 VLM 耗盡伺服器資源。 |
-| **EH-04** | 暫存磁碟空間不足 | 建立臨時截圖目錄時磁碟剩餘空間小於 1GB | 系統 **MUST** 拒絕寫入暫存截圖，直接安全跳過視覺處理並降級至純語音模式，**MUST NOT** 引發磁碟耗盡崩潰。 |
+3. **STEP 3: 原子性檔案寫入與同名保護**
+   - 系統 **MUST** 以 UTF-8 編碼將會議逐字稿 (`.md`) 與會議記錄 (`.md`) 安全複製至目標目錄。
+   - 若目標目錄中已存在相同檔案名稱，系統 **SHOULD** 採用內容校驗並覆蓋最新版本，或支援遞增流水號（相容重複摘要更新場景）。
+   - 複製完成後，系統 **MUST** 驗證目標檔案是否存在且大小大於 0 位元組。
+
+4. **STEP 4: 狀態回饋與持久化紀錄**
+   - 系統 **MUST** 在任務實體中記錄同步結果（成功或失敗原因）。
+   - 主管線 **MUST NOT** 因為 KM Wiki 同步失敗而將任務標記為失敗，**MUST** 保持主語音轉錄與會議記錄流程的健全性。
 
 ---
 
-## 3. 設定與配置分離 (Configuration & Environment)
+## 3. Error Handling (異常與邊界處理 - 至少 3 個 Edge Cases)
 
-* **`.env` (機密與環境端點)**：
-  ```env
-  VLM_URL=http://192.168.1.100:11434
-  VLM_MODEL=qwen3.8:27b
+| 邊界狀況 (Edge Case) | 觸發條件 (Criteria) | 對應處置行動 (RFC2119 Action) |
+|---|---|---|
+| **Edge Case 1: KM Wiki 磁碟或網路 UNC 共享離線** | 目標目錄 `raw_dir` 為網路共享路徑或本機卸載磁碟，磁碟離線或無法連線 (`OSError: [WinError 53] 找不到網路路徑` 或 `PermissionError`)。 | 系統 **MUST** 捕獲 I/O 例外，記錄警告日誌 `[KMWiki] 同步失敗: 目標路徑不可達`，將任務的 `km_wiki_synced` 標註為 `False`，並 **MUST NOT** 中斷 Celery 任務或中斷本地輸出存檔。 |
+| **Edge Case 2: 磁碟空間已滿 (Disk Full / ENOSPC)** | 目標磁碟剩餘空間不足以寫入新的 `.md` 檔案。 | 系統 **MUST** 捕捉磁碟空間不足例外，清除可能殘留的 0 位元組損壞目標檔案，記錄重大警告日誌，並 **SHOULD** 在 API 回應中註記「KM Wiki 儲存空間已滿，本地存檔完好」。 |
+| **Edge Case 3: 惡意或特殊字元之會議名稱路徑注入** | LLM 生成之會議主題包含特殊符號（例如 `../../etc/passwd`、`CON`、`PRN`、`*`、`?`、`:`、換行符號）。 | 系統 **MUST** 透過 `sanitize_filename` 嚴格剝除違法字元，檔名長度 **MUST NOT** 超過 80 字元；若清理後字串為空，**MUST** 回退採用 `Task_{task_id[:8]}` 作為安全備用檔名。 |
+| **Edge Case 4: 任務重新摘要觸發重複同步** | 使用者透過前端按鈕觸發 `resummarize`，產生了更新版的會議記錄。 | 系統 **SHOULD** 自動偵測舊檔案並安全替換為最新提煉之會議記錄，確保 KM Wiki 知識庫中的紀錄與最新轉錄結果一致。 |
+
+---
+
+## 4. 後端 RESTful API 規劃 (Controller)
+
+### 4.1 手動觸發同步 API
+- **端點**: `POST /api/v1/transcriptions/{task_id}/sync-km-wiki`
+- **說明**: 允許前端介面或外部排程對指定任務重新執行 KM Wiki 同步。
+- **回應範例 (200 OK)**:
+  ```json
+  {
+    "task_id": "c1f7b889-4a0b-4876-857e-e478546b539c",
+    "km_wiki_synced": true,
+    "target_dir": "D:/km_wiki/Minutes/raw/2026-09-17",
+    "synced_files": [
+      "D:/km_wiki/Minutes/raw/2026-09-17/Q3營運會議_逐字稿.md",
+      "D:/km_wiki/Minutes/raw/2026-09-17/Q3營運會議_會議紀錄與摘要.md"
+    ],
+    "message": "成功同步至 KM Wiki Minutes 知識庫 raw 檔區"
+  }
   ```
-* **`config.ini` (功能微調參數)**：
-  ```ini
-  [Vision]
-  enabled = true
-  vlm_url = http://192.168.1.100:11434
-  vlm_model = qwen3.8:27b
-  scene_threshold = 0.3
-  min_interval_seconds = 15
-  max_keyframes = 30
+
+### 4.2 查詢 KM Wiki 狀態 API
+- **端點**: `GET /api/v1/km-wiki/status`
+- **說明**: 檢查 KM Wiki 目錄可用性與目前設定。
+- **回應範例 (200 OK)**:
+  ```json
+  {
+    "enabled": true,
+    "raw_dir": "D:/km_wiki/Minutes/raw",
+    "date_subfolder": true,
+    "is_writable": true,
+    "available_space_mb": 51200
+  }
   ```

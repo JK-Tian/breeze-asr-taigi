@@ -8,7 +8,7 @@
 import os
 import logging
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, event, Column, String, DateTime, Text, Engine
+from sqlalchemy import Boolean, Column, DateTime, Engine, String, Text, create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 logger = logging.getLogger("database")
@@ -85,12 +85,35 @@ class TaskModel(Base):
     transcript = Column(Text, nullable=True)
     summary = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
+    km_wiki_synced = Column(Boolean, default=False, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 def init_db() -> None:
-    """初始化資料庫綱要與資料表結構。"""
+    """初始化資料庫綱要與資料表結構，並執行自動增量欄位遷移。"""
     Base.metadata.create_all(bind=engine)
+    try:
+        with engine.connect() as conn:
+            backend_name = engine.url.get_backend_name()
+            if backend_name == "sqlite":
+                result = conn.exec_driver_sql("PRAGMA table_info(tasks)").fetchall()
+                column_names = [row[1] for row in result]
+                if "km_wiki_synced" not in column_names:
+                    conn.exec_driver_sql("ALTER TABLE tasks ADD COLUMN km_wiki_synced BOOLEAN DEFAULT 0")
+                    conn.commit()
+                    logger.info("已自動為 SQLite tasks 表新增 km_wiki_synced 欄位。")
+            elif backend_name == "postgresql":
+                conn.exec_driver_sql("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS km_wiki_synced BOOLEAN DEFAULT FALSE")
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"資料庫欄位自動遷移檢查失敗: {e}")
+
+
+# 模組載入時自動確保欄位結構完整
+try:
+    init_db()
+except Exception:
+    pass
 
 
 def get_db():

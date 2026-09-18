@@ -80,6 +80,7 @@ def get_task_status(task_id: str, db: Session = Depends(get_db)):
         transcript=db_task.transcript,
         summary=db_task.summary,
         error_message=db_task.error_message,
+        km_wiki_synced=db_task.km_wiki_synced,
         created_at=db_task.created_at
     )
 
@@ -138,5 +139,19 @@ def resummarize_task(task_id: str, db: Session = Depends(get_db)):
         transcript=db_task.transcript,
         summary=db_task.summary,
         error_message=None,
+        km_wiki_synced=db_task.km_wiki_synced,
         created_at=db_task.created_at
     )
+
+
+@router.post("/transcriptions/{task_id}/sync-km-wiki")
+def sync_km_wiki_endpoint(task_id: str, db: Session = Depends(get_db)):
+    """手動重新觸發將特定任務的會議紀錄與逐字稿同步至 KM Wiki Minutes 知識庫 raw 檔區。"""
+    return transcription.sync_task_km_wiki(db, task_id)
+
+
+@router.get("/km-wiki/status")
+def get_km_wiki_status_endpoint():
+    """查詢 KM Wiki Minutes 知識庫 raw 檔區連通性與寫入權限狀態。"""
+    km_service = transcription.get_km_wiki_service()
+    return km_service.check_status()

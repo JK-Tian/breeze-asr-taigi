@@ -22,4 +22,5 @@ class TaskStatusResponse(BaseModel):
     transcript: Optional[str] = None
     summary: Optional[str] = None
     error_message: Optional[str] = None
+    km_wiki_synced: Optional[bool] = None
     created_at: datetime

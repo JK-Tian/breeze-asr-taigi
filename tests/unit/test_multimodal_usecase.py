@@ -57,6 +57,7 @@ class TestMultimodalUseCase:
     @patch("src.infrastructure.ml_models.MeetingTranscriber.get_instance")
     def test_process_video_triggers_vlm_and_cleanup(self, mock_transcriber_factory, mock_save_md, clean_db):
         """驗證當上傳影片時，自動觸發關鍵幀擷取、VLM 分析與及時清理。"""
+        mock_save_md.return_value = True
         task_id = "test-multimodal-video-task"
         video_filename = "presentation.mp4"
         clean_db(task_id, video_filename)
@@ -74,7 +75,8 @@ class TestMultimodalUseCase:
 
         with patch("src.usecases.transcription.KeyframeExtractor") as MockExtractorCls, \
              patch("src.usecases.transcription.get_vlm_client") as mock_get_vlm, \
-             patch("src.usecases.transcription.get_llm_client") as mock_get_llm:
+             patch("src.usecases.transcription.get_minutes_llm_client") as mock_get_minutes_llm, \
+             patch("src.usecases.transcription.get_correction_llm_client") as mock_get_corr_llm:
 
             mock_extractor = MockExtractorCls.return_value
             mock_extractor.is_video_file.return_value = True
@@ -93,7 +95,8 @@ class TestMultimodalUseCase:
                 "## 【TODO / 行動項目】\n- 行動 1\n\n"
                 "## 【下次會議追蹤項目】\n- 追蹤 1"
             )
-            mock_get_llm.return_value = mock_llm
+            mock_get_minutes_llm.return_value = mock_llm
+            mock_get_corr_llm.return_value = mock_llm
 
             # 執行任務
             process_audio_task(task_id, video_filename)
@@ -122,6 +125,7 @@ class TestMultimodalUseCase:
     @patch("src.infrastructure.ml_models.MeetingTranscriber.get_instance")
     def test_process_audio_only_bypasses_vlm(self, mock_transcriber_factory, mock_save_md, clean_db):
         """驗證當上傳純音訊時，平滑跳過視覺關鍵幀抽取與 VLM 分析。"""
+        mock_save_md.return_value = True
         task_id = "test-audio-only-task"
         audio_filename = "recording.wav"
         clean_db(task_id, audio_filename)
@@ -132,7 +136,8 @@ class TestMultimodalUseCase:
 
         with patch("src.usecases.transcription.KeyframeExtractor") as MockExtractorCls, \
              patch("src.usecases.transcription.get_vlm_client") as mock_get_vlm, \
-             patch("src.usecases.transcription.get_llm_client") as mock_get_llm:
+             patch("src.usecases.transcription.get_minutes_llm_client") as mock_get_minutes_llm, \
+             patch("src.usecases.transcription.get_correction_llm_client") as mock_get_corr_llm:
 
             mock_extractor = MockExtractorCls.return_value
             mock_extractor.is_video_file.return_value = False
@@ -146,7 +151,8 @@ class TestMultimodalUseCase:
                 "## 【TODO / 行動項目】\n- 行動\n\n"
                 "## 【下次會議追蹤項目】\n- 追蹤"
             )
-            mock_get_llm.return_value = mock_llm
+            mock_get_minutes_llm.return_value = mock_llm
+            mock_get_corr_llm.return_value = mock_llm
 
             process_audio_task(task_id, audio_filename)
 
@@ -168,6 +174,7 @@ class TestMultimodalUseCase:
     @patch("src.infrastructure.ml_models.MeetingTranscriber.get_instance")
     def test_vlm_failure_gracefully_degrades(self, mock_transcriber_factory, mock_save_md, clean_db):
         """驗證當 VLM 拋出異常時，管線優雅降級為純語音摘要，任務狀態正常完成且暫存幀妥善清理。"""
+        mock_save_md.return_value = True
         task_id = "test-vlm-degradation-task"
         video_filename = "bad_vlm.mp4"
         clean_db(task_id, video_filename)
@@ -182,7 +189,8 @@ class TestMultimodalUseCase:
 
         with patch("src.usecases.transcription.KeyframeExtractor") as MockExtractorCls, \
              patch("src.usecases.transcription.get_vlm_client") as mock_get_vlm, \
-             patch("src.usecases.transcription.get_llm_client") as mock_get_llm:
+             patch("src.usecases.transcription.get_minutes_llm_client") as mock_get_minutes_llm, \
+             patch("src.usecases.transcription.get_correction_llm_client") as mock_get_corr_llm:
 
             mock_extractor = MockExtractorCls.return_value
             mock_extractor.is_video_file.return_value = True
@@ -202,7 +210,8 @@ class TestMultimodalUseCase:
                 "## 【TODO / 行動項目】\n- 行動\n\n"
                 "## 【下次會議追蹤項目】\n- 追蹤"
             )
-            mock_get_llm.return_value = mock_llm
+            mock_get_minutes_llm.return_value = mock_llm
+            mock_get_corr_llm.return_value = mock_llm
 
             process_audio_task(task_id, video_filename)
 

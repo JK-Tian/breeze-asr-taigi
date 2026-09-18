@@ -13,10 +13,11 @@ import os
 import re
 import subprocess
 import sys
-from typing import Optional
+from typing import Any, Dict, Optional
 import urllib.request
 import uuid
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from src.domain.entities import TaskResponse
 from src.infrastructure.celery_app import celery_app
@@ -27,6 +28,7 @@ parent_src = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../s
 if parent_src not in sys.path:
     sys.path.insert(0, parent_src)
 
+from taigi_asr.km_wiki import KMWikiService
 from taigi_asr.llm import LLMClient
 from taigi_asr.minutes import (
     extract_meeting_title,
@@ -39,33 +41,58 @@ from taigi_asr.vision import KeyframeExtractor, VLMClient
 logger = logging.getLogger("transcription_usecase")
 
 
-def get_llm_client() -> LLMClient:
-    """從設定檔與環境變數取得 LLMClient 實例。"""
+def get_correction_llm_client() -> LLMClient:
+    """取得專責語意錯別字校正的 LLMClient (預設 8001)。"""
     config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../config.ini"))
-    llm_url = "http://192.168.1.100:8002/v1"
-    llm_model = "auto"
+    correction_url = "http://192.168.1.100:8001/v1"
+    correction_model = "auto"
 
     if os.path.exists(config_path):
         try:
             parser = configparser.ConfigParser()
             parser.read(config_path, encoding="utf-8")
-            if "Correction" in parser and "correction_url" in parser["Correction"]:
-                llm_url = parser["Correction"]["correction_url"]
-            elif "LLM" in parser and "llm_url" in parser["LLM"]:
-                llm_url = parser["LLM"]["llm_url"]
-
-            if "Correction" in parser and "correction_model" in parser["Correction"]:
-                llm_model = parser["Correction"]["correction_model"]
-            elif "LLM" in parser and "llm_model" in parser["LLM"]:
-                llm_model = parser["LLM"]["llm_model"]
+            if "Correction" in parser:
+                correction_url = parser["Correction"].get("correction_url", correction_url)
+                correction_model = parser["Correction"].get("correction_model", correction_model)
         except Exception as e:
-            logger.warning(f"讀取 config.ini 失敗: {e}")
+            logger.warning(f"讀取 config.ini [Correction] 失敗: {e}")
 
-    # 環境變數優先
-    llm_url = os.environ.get("LLM_CORRECTION_URL", os.environ.get("LLM_URL", os.environ.get("OLLAMA_URL", llm_url)))
-    llm_model = os.environ.get("LLM_CORRECTION_MODEL", os.environ.get("LLM_MODEL", os.environ.get("OLLAMA_MODEL", llm_model)))
+    # 環境變數優先：LLM_CORRECTION_URL > LLM_URL > config.ini
+    correction_url = os.environ.get("LLM_CORRECTION_URL", os.environ.get("LLM_URL", correction_url))
+    correction_model = os.environ.get("LLM_CORRECTION_MODEL", os.environ.get("LLM_MODEL", correction_model))
 
-    return LLMClient(base_url=llm_url, model=llm_model, timeout=1800)
+    return LLMClient(base_url=correction_url, model=correction_model, timeout=1800)
+
+
+def get_minutes_llm_client() -> LLMClient:
+    """取得專責結構化會議記錄提煉的 LLMClient (預設 8002)。"""
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../config.ini"))
+    minutes_url = "http://192.168.1.100:8002/v1"
+    minutes_model = "auto"
+
+    if os.path.exists(config_path):
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(config_path, encoding="utf-8")
+            if "LLM" in parser:
+                minutes_url = parser["LLM"].get("llm_url", minutes_url)
+                minutes_model = parser["LLM"].get("llm_model", minutes_model)
+            elif "MeetingMinutes" in parser:
+                minutes_url = parser["MeetingMinutes"].get("minutes_url", minutes_url)
+                minutes_model = parser["MeetingMinutes"].get("minutes_model", minutes_model)
+        except Exception as e:
+            logger.warning(f"讀取 config.ini [LLM] 失敗: {e}")
+
+    # 環境變數優先：LLM_MINUTES_URL > LLM_URL > config.ini (絕不讀取 LLM_CORRECTION_URL，徹底杜絕遮蔽)
+    minutes_url = os.environ.get("LLM_MINUTES_URL", os.environ.get("LLM_URL", minutes_url))
+    minutes_model = os.environ.get("LLM_MINUTES_MODEL", os.environ.get("LLM_MODEL", minutes_model))
+
+    return LLMClient(base_url=minutes_url, model=minutes_model, timeout=1800)
+
+
+def get_llm_client() -> LLMClient:
+    """向下相容別名，取得會議記錄 Client。"""
+    return get_minutes_llm_client()
 
 
 def get_vlm_client() -> VLMClient:
@@ -168,16 +195,17 @@ def process_audio_task(task_id: str, file_path: str):
         logger.info(f"[{task_id}] 開始進行語音轉錄 ({file_path})...")
         real_result = transcriber.process_audio(file_path)
 
-        # 2. 階段一：語意錯別字校正
-        client = get_llm_client()
-        logger.info(f"[{task_id}] 執行語意錯別字校正 (LLM: {client.base_url})...")
-        corrected_transcript = client.correct_transcript(real_result)
+        # 2. 階段一：語意錯別字校正 (專屬 8001 / Correction 端點)
+        correction_client = get_correction_llm_client()
+        logger.info(f"[{task_id}] 執行語意錯別字校正 (Correction LLM: {correction_client.base_url})...")
+        corrected_transcript = correction_client.correct_transcript(real_result)
         db_task.transcript = corrected_transcript
         db.commit()
 
-        # 3. 階段二：音視雙模態結構化會議記錄生成 (遵循 video-to-notes 規範)
-        logger.info(f"[{task_id}] 生成結構化會議紀錄摘要 (結合視覺時間軸: {visual_context is not None})...")
-        raw_minutes_summary = client.generate_meeting_minutes(
+        # 3. 階段二：音視雙模態結構化會議記錄生成 (專屬 8002 / Minutes 端點，遵循 video-to-notes 規範)
+        minutes_client = get_minutes_llm_client()
+        logger.info(f"[{task_id}] 生成結構化會議紀錄摘要 (Minutes LLM: {minutes_client.base_url}, 結合視覺時間軸: {visual_context is not None})...")
+        raw_minutes_summary = minutes_client.generate_meeting_minutes(
             corrected_transcript, visual_context=visual_context
         )
         # 包裝為 Obsidian PKM YAML Frontmatter 格式與文末參考資料
@@ -192,15 +220,16 @@ def process_audio_task(task_id: str, file_path: str):
         db_task.status = "completed"
         db.commit()
 
-        # 5. 自動歸檔 Markdown 檔案至 output/YYYY-MM-DD/
-        save_output_md_files(
+        # 5. 自動歸檔 Markdown 檔案至 output/YYYY-MM-DD/ 並同步至 KM Wiki
+        is_synced = save_output_md_files(
             task_id=task_id,
             original_filename=db_task.file_path,
             transcript=db_task.transcript,
             summary=db_task.summary,
         )
-
-        logger.info(f"[{task_id}] 任務全流程處理完成。")
+        db_task.km_wiki_synced = bool(is_synced)
+        db.commit()
+        logger.info(f"[{task_id}] 任務全流程處理完成 (KM Wiki 同步: {is_synced})。")
 
     except Exception as e:
         db.rollback()
@@ -216,7 +245,7 @@ def process_audio_task(task_id: str, file_path: str):
 
 @celery_app.task(name="resummarize_task")
 def resummarize_task(task_id: str):
-    """Celery 背景任務：重新進行會議記錄摘要生成。"""
+    """Celery 背景任務：重新進行會議記錄摘要生成 (使用專屬 Minutes LLM 端點)。"""
     db = SessionLocal()
     try:
         db_task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
@@ -227,9 +256,9 @@ def resummarize_task(task_id: str):
         db_task.error_message = None
         db.commit()
 
-        client = get_llm_client()
-        logger.info(f"[{task_id}] 重新生成會議記錄摘要...")
-        raw_minutes_summary = client.generate_meeting_minutes(db_task.transcript)
+        minutes_client = get_minutes_llm_client()
+        logger.info(f"[{task_id}] 重新生成會議記錄摘要 (Minutes LLM: {minutes_client.base_url})...")
+        raw_minutes_summary = minutes_client.generate_meeting_minutes(db_task.transcript)
         media_name = os.path.basename(db_task.file_path) if db_task.file_path else f"Task_{task_id[:8]}"
         obsidian_summary = format_obsidian_meeting_notes(
             summary=raw_minutes_summary,
@@ -239,13 +268,15 @@ def resummarize_task(task_id: str):
         db_task.status = "completed"
         db.commit()
 
-        save_output_md_files(
+        is_synced = save_output_md_files(
             task_id=task_id,
             original_filename=db_task.file_path,
             transcript=db_task.transcript,
             summary=db_task.summary,
         )
-        logger.info(f"[{task_id}] 重新生成會議紀錄完成。")
+        db_task.km_wiki_synced = bool(is_synced)
+        db.commit()
+        logger.info(f"[{task_id}] 重新生成會議紀錄完成 (KM Wiki 同步: {is_synced})。")
     except Exception as e:
         db.rollback()
         db_task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
@@ -258,8 +289,43 @@ def resummarize_task(task_id: str):
         db.close()
 
 
-def save_output_md_files(task_id: str, original_filename: str, transcript: str, summary: str):
-    """將逐字稿與會議紀錄摘要自動儲存至 output/YYYY-MM-DD/ 目錄下的 .md 檔案。"""
+def get_km_wiki_service() -> KMWikiService:
+    """取得 KM Wiki 同步服務實例。"""
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../config.ini"))
+    enabled = True
+    raw_dir = "D:/km_wiki/Minutes/raw"
+    date_subfolder = True
+
+    if os.path.exists(config_path):
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(config_path, encoding="utf-8")
+            if "KMWiki" in parser:
+                km_cfg = parser["KMWiki"]
+                enabled = km_cfg.getboolean("enabled", fallback=enabled)
+                raw_dir = km_cfg.get("raw_dir", fallback=raw_dir)
+                date_subfolder = km_cfg.getboolean("date_subfolder", fallback=date_subfolder)
+        except Exception as e:
+            logger.warning(f"讀取 config.ini [KMWiki] 失敗: {e}")
+
+    # 環境變數優先
+    if "KM_WIKI_ENABLED" in os.environ:
+        enabled = os.environ["KM_WIKI_ENABLED"].lower() in ("true", "1", "yes")
+    if "KM_WIKI_RAW_DIR" in os.environ:
+        raw_dir = os.environ["KM_WIKI_RAW_DIR"]
+    if "KM_WIKI_DATE_SUBFOLDER" in os.environ:
+        date_subfolder = os.environ["KM_WIKI_DATE_SUBFOLDER"].lower() in ("true", "1", "yes")
+
+    return KMWikiService(enabled=enabled, raw_dir=raw_dir, date_subfolder=date_subfolder)
+
+
+def save_output_md_files(task_id: str, original_filename: str, transcript: str, summary: str) -> bool:
+    """將逐字稿與會議紀錄摘要自動儲存至 output/YYYY-MM-DD/ 目錄，並同步至 KM Wiki Minutes 知識庫 raw 檔區。
+
+    Returns:
+        bool: 是否成功同步至 KM Wiki (未啟用或失敗時回傳 False)。
+    """
+    km_synced = False
     try:
         base_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../output"))
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -274,6 +340,51 @@ def save_output_md_files(task_id: str, original_filename: str, transcript: str, 
             task_id=task_id,
             media_filename=original_filename,
         )
-        logger.info(f"[{task_id}] 成功儲存輸出 MD 檔案: {t_file.name}, {s_file.name}")
+        logger.info(f"[{task_id}] 成功儲存本地輸出 MD 檔案: {t_file.name}, {s_file.name}")
+
+        # 同步至 KM Wiki Minutes 知識庫 raw 檔區
+        km_service = get_km_wiki_service()
+        sync_result = km_service.sync_files(transcript_path=t_file, summary_path=s_file)
+        km_synced = sync_result.get("synced", False)
+        if km_synced:
+            logger.info(f"[{task_id}] 成功同步至 KM Wiki: {sync_result.get('synced_files')}")
     except Exception as e:
-        logger.error(f"[{task_id}] 儲存輸出 MD 檔案失敗: {e}")
+        logger.error(f"[{task_id}] 儲存輸出 MD 檔案或同步 KM Wiki 失敗: {e}")
+
+    return km_synced
+
+
+def sync_task_km_wiki(db: Session, task_id: str) -> Dict[str, Any]:
+    """手動或外部重新觸發特定任務同步至 KM Wiki Minutes raw 檔區。
+
+    Args:
+        db: 資料庫 Session
+        task_id: 任務 ID
+
+    Returns:
+        同步狀態字典
+    """
+    db_task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not db_task.transcript and not db_task.summary:
+        raise HTTPException(status_code=400, detail="任務尚未具備逐字稿或會議紀錄，無法同步至 KM Wiki")
+
+    km_synced = save_output_md_files(
+        task_id=task_id,
+        original_filename=db_task.file_path,
+        transcript=db_task.transcript or "",
+        summary=db_task.summary or "",
+    )
+
+    db_task.km_wiki_synced = km_synced
+    db.commit()
+
+    km_service = get_km_wiki_service()
+    return {
+        "task_id": task_id,
+        "km_wiki_synced": km_synced,
+        "raw_dir": km_service.raw_dir,
+        "message": "成功同步至 KM Wiki Minutes 知識庫 raw 檔區" if km_synced else "KM Wiki 同步失敗或未啟用 (請檢查目錄權限或設定)",
+    }

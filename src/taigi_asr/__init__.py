@@ -3,5 +3,6 @@
 __version__ = "0.1.0"
 
 from taigi_asr.segments import TimestampedSegment
+from taigi_asr.km_wiki import KMWikiService
 
-__all__ = ["TimestampedSegment", "__version__"]
+__all__ = ["TimestampedSegment", "KMWikiService", "__version__"]

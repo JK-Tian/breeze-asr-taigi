@@ -1,88 +1,55 @@
-# 行為驅動規格書 (Behavior Driven Development - BDD.md)
-## 天工會議紀錄：多模態視訊會議理解驗收場景
+# 行為驅動開發規格書 (Behavior-Driven Development - BDD.md)
+## 天工會議紀錄：KM Wiki Minutes 知識庫 raw 檔區同步驗收場景
 
 ---
 
-## 1. 規範參數定義 (Parameters)
-
-```yaml
-parameters:
-  system_under_test: "天工會議紀錄系統 (Multimodal Vision & Audio Edition)"
-  test_environment:
-    os: "Windows 11"
-    python_env: "uv run (Python 3.10+)"
-  vlm_endpoints:
-    vllm_url: "http://192.168.1.100:8000/v1"
-    default_model: "auto"
-  supported_video_formats:
-    - ".mp4"
-    - ".mkv"
-    - ".mov"
-    - ".webm"
-    - ".avi"
-```
+### Scenario 1: 音視會議轉錄完成後自動同步至 KM Wiki Minutes 知識庫 raw 檔區 (Happy Path)
+- **Given**: 系統組態設定 `[KMWiki] enabled = true`，且目標路徑為 `D:/km_wiki/Minutes/raw`，`date_subfolder = true`
+- **And**: 使用者上傳會議錄音或視訊，後端完成語音辨識、LLM 校正與 Obsidian 會議記錄提煉
+- **When**: 本地存檔模組於 `output/2026-09-17/` 產出 `Q3營運檢討會_逐字稿.md` 與 `Q3營運檢討會_會議紀錄與摘要.md`
+- **Then**: 系統自動在 `D:/km_wiki/Minutes/raw/2026-09-17/` 建立對應資料夾
+- **And**: 完整複製逐字稿與會議記錄兩份 Markdown 檔案至該目錄
+- **And**: 任務資料庫記錄 `km_wiki_synced = True`，前端呈現「已同步至 KM Wiki」標籤。
 
 ---
 
-## 2. 核心行為驗收場景 (Gherkin Scenarios)
-
-### 場景 1：視訊會議關鍵幀智慧擷取與簡報換頁偵測
-* **Given** 使用者上傳了一個包含簡報投影片展示的會議錄影檔案 (`meeting.mp4`)
-* **When** 系統啟動關鍵幀擷取器 (`KeyframeExtractor`)
-* **Then** 系統 **MUST** 透過 FFmpeg 場景切換演算法自動識別出簡報切換的時間點
-* **And** 擷取之影像幀 **MUST** 縮放為標準尺寸 (`1280x720`) 以兼顧辨識率與推論效率
-* **And** 擷取數量 **MUST NOT** 超過設定之最大上限 (預設 30 張)，每張畫面均帶有對應之會議時間戳
-
-### 場景 2：多模態 VLM 萃取投影片核心數據與決策標記
-* **Given** 關鍵幀擷取器成功抽取出多張投影片 JPEG 畫面
-* **When** 系統調用多模態 VLM 客戶端 (`VLMClient`) 向 `http://192.168.1.100:11434` 發送分析請求
-* **Then** 模型 **MUST** 辨識出畫面上的投影片標題、關鍵業績數字 (如 KPI, 預算, 達成率) 與圖表趨勢
-* **And** 輸出結構化為包含時間標記的視覺時間軸文字摘要 (`VisualTimeline`)
-
-### 場景 3：音視雙模態融合生成高階商務會議筆記
-* **Given** 語音轉錄管線已產出 ASR 逐字稿，且視覺管線已產出時間軸簡報摘要
-* **When** 提煉引擎將語音逐字稿與視覺摘要共同傳入 LLM 會議記錄模型
-* **Then** 模型 **MUST** 對照投影片上的專有名詞修正語音同音錯別字
-* **And** 產出之會議記錄【會議核心摘要 (Highlights)】與【議題討論紀要】中，**MUST** 包含投影片展示之具體數據結論（即使發言人口頭未逐字提及）
-* **And** 產出之 Markdown 文件 **MUST** 嚴格遵循 `skills/video-to-notes` 的 Obsidian PKM YAML Frontmatter 格式
-
-### 場景 4：零截圖純淨排版與看完即忘清理機制 (Zero-screenshot & Ephemeral)
-* **Given** 視覺理解管線已完成所有關鍵幀的多模態推論與摘要整理
-* **When** 系統完成 Obsidian Markdown 會議筆記寫入
-* **Then** 系統 **MUST** 立即清空並刪除暫存目錄下的所有截圖檔案
-* **And** 產出之 Markdown 檔案中 **MUST NOT** 包含任何圖片語法 (`![]()`)，維持純淨文字商務排版
-* **And** 檔案最末端 **MUST** 正確收錄 `# 參考資料` 並標註原始影片來源
-
-### 場景 5：純音訊或多模態服務異常時的平滑自適應降級 (Graceful Fallback)
-* **Given** 使用者上傳了一個純音訊檔案 (`audio.mp3`)，或視訊檔案的影像軌損壞，或 VLM 伺服器暫時斷線
-* **When** 系統偵測到無法提取影像畫面或呼叫 VLM 遭遇逾時
-* **Then** 系統 **MUST** 捕捉例外並記錄友善日誌，自動平滑降級至純語音轉錄流程
-* **And** 任務狀態 **MUST NOT** 崩潰為 `failed`，最終仍順利產出完整的會議記錄
+### Scenario 2: 重新生成會議記錄 (Resummarize) 自動同步更新知識庫
+- **Given**: 一筆已完成轉錄但先前摘要需要重新調整之會議任務 (ID: `task-123`)
+- **When**: 使用者在介面上點擊「重新生成摘要」按鈕
+- **Then**: LLM 重新整理出新版結構化會議記錄
+- **And**: 系統自動更新本機 `output/YYYY-MM-DD/` 之會議記錄 `.md`
+- **And**: 系統自動將最新版會議記錄覆蓋更新至 `D:/km_wiki/Minutes/raw/YYYY-MM-DD/`
+- **And**: 保持知識庫檔案與最新會議摘要完全一致。
 
 ---
 
-## 3. SOP 驗證流程 (Verification Protocol)
+### Scenario 3: KM Wiki 目錄磁碟離線或無寫入權限時之平滑降級 (Edge Case 1 & Graceful Degradation)
+- **Given**: 目標路徑 `D:/km_wiki/Minutes/raw` 指向之網路共享硬碟斷線或當前權限不足
+- **When**: 後端任務嘗試執行 KM Wiki 檔案複製
+- **Then**: `KMWikiService` 捕捉 `OSError` / `PermissionError` 例外並記錄警告日誌
+- **And**: 系統將任務之 `km_wiki_synced` 標記為 `False`，並將主任務狀態標記為 `completed`
+- **And**: 本地 `output/YYYY-MM-DD/` 檔案完好保留，主語音轉錄流程不中斷崩潰。
 
-```yaml
-parameters:
-  inputs:
-    - test_suite: "tests/unit/test_keyframe_extractor.py"
-    - test_suite_vlm: "tests/unit/test_vlm_client.py"
-    - test_suite_multimodal: "tests/unit/test_multimodal_minutes.py"
-  outputs:
-    - test_report: "pytest_results.xml"
-```
+---
 
-#### Steps (RFC2119 關鍵字)
-1. 測試套件 **MUST** 在單元測試中模擬 FFmpeg 輸出，驗證關鍵幀擷取與時間戳計算正確性。
-2. 測試套件 **MUST** 模擬 VLM 回傳結構化視覺文字，驗證 VisualTimeline 解析無誤。
-3. 測試套件 **MUST** 驗證多模態 Prompt 注入後，生成的會議筆記滿足 video-to-notes 規範。
-4. 測試套件 **MUST** 驗證清理函式在成功與失敗兩種情況下均能確實抹除暫存截圖。
+### Scenario 4: 會議名稱包含特殊字元或路徑遍歷攻擊之防禦 (Security Review)
+- **Given**: LLM 生成或使用者輸入之會議主題為 `../../etc/conf/重大決議:會議*報告`
+- **When**: 系統準備同步至 KM Wiki raw 檔區
+- **Then**: `sanitize_filename` 消毒過濾非法字元，安全轉化為 `重大決議會議報告`
+- **And**: 檔案被限制在 `D:/km_wiki/Minutes/raw/{YYYY-MM-DD}/重大決議會議報告_會議紀錄與摘要.md` 內，杜絕任何路徑遍歷漏洞。
 
-#### Error Handling (異常與邊界處理)
+---
 
-| 編號 | 異常條件 (Criteria) | 系統行動 (Action) |
-| :--- | :--- | :--- |
-| **EH-01** | VLM 服務回應格式非 JSON 或缺少預期欄位 | 系統 **MUST** 採取防禦性字串清洗，降級為純文字解析，**MUST NOT** 造成反序列化崩潰。 |
-| **EH-02** | 視訊時間軸長度異常 (0 秒或負數) | 擷取器 **MUST** 拒絕處理並回傳空清單，觸發平滑降級。 |
-| **EH-03** | 暫存目錄權限不足無法刪除 | 清理模組 **MUST** 捕捉 `PermissionError`，記錄警示並於下一次啟動時標記待清理，**MUST NOT** 阻斷主流程完成。 |
+### Scenario 5: 透過 RESTful API 手動觸發 KM Wiki 同步 (Controller Endpoint)
+- **Given**: 某歷史任務先前因網路短暫斷線未能成功同步至 KM Wiki (`km_wiki_synced = False`)
+- **When**: 用戶端發送 HTTP `POST /api/v1/transcriptions/{task_id}/sync-km-wiki`
+- **Then**: 後端確認該任務存在且本機檔案齊全
+- **And**: 重新調用 `KMWikiService` 執行檔案寫入
+- **And**: 回傳 HTTP 200 與成功訊息，將該任務更新為 `km_wiki_synced = True`。
+
+---
+
+### Scenario 6: 停用 KM Wiki 同步設定時之平滑跳過 (Feature Toggle)
+- **Given**: 系統組態設定 `[KMWiki] enabled = false`
+- **When**: 會議轉錄完成並存檔本地
+- **Then**: 系統略過 KM Wiki 複製動作，不產生多餘目錄，記錄 `km_wiki_synced = False`，任務正常結束。

@@ -77,12 +77,13 @@ LLM_URL=http://192.168.1.100:8002/v1
 LLM_MODEL=auto
 
 # =============== 多模態視覺模型 (VLM 視訊投影片理解) ===============
-VLM_URL=http://192.168.1.100:11434
-VLM_MODEL=qwen3.8:27b
+VLM_URL=http://192.168.1.100:8000/v1
+VLM_MODEL=Qwen/Qwen3.8-27B-FP8
 
-# =============== KM Wiki 自動同步設定 ===============
+# =============== KM Wiki 自動同步設定 (Minutes 知識庫 raw 檔區) ===============
 KM_WIKI_ENABLED=true
-KM_WIKI_RAW_DIR=D:/km_wiki/raw
+KM_WIKI_RAW_DIR=D:/km_wiki/Minutes/raw
+KM_WIKI_DATE_SUBFOLDER=true
 ```
 
 亦可在 `config.ini` 中進行細部參數調整：
@@ -97,15 +98,16 @@ minutes_model = auto
 
 [Vision]
 enabled = true
-vlm_url = http://192.168.1.100:11434
-vlm_model = qwen3.8:27b
+vlm_url = http://192.168.1.100:8000/v1
+vlm_model = Qwen/Qwen3.8-27B-FP8
 scene_threshold = 0.3
 min_interval_seconds = 15
 max_keyframes = 30
 
 [KMWiki]
 enabled = true
-raw_dir = D:/km_wiki/raw
+raw_dir = D:/km_wiki/Minutes/raw
+date_subfolder = true
 ```
 
 ---

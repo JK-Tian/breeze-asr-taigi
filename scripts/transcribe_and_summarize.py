@@ -43,9 +43,11 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+from taigi_asr.km_wiki import KMWikiService
 from taigi_asr.llm import LLMClient
 from taigi_asr.minutes import (
     extract_meeting_title,
+    format_obsidian_meeting_notes,
     save_meeting_outputs,
     validate_meeting_minutes_sections,
 )
@@ -63,8 +65,8 @@ def load_config_defaults() -> dict:
         "url": "http://192.168.1.100:8002/v1",
         "model": "auto",
         "timeout": 1800,
-        "km_wiki_enabled": False,
-        "km_wiki_raw_dir": "D:/km_wiki/raw",
+        "km_wiki_enabled": True,
+        "km_wiki_raw_dir": "D:/km_wiki/Minutes/raw",
     }
 
     # 1. 讀取 config.ini
@@ -84,8 +86,8 @@ def load_config_defaults() -> dict:
                 defaults["model"] = parser["LLM"]["llm_model"]
 
             if "KMWiki" in parser:
-                defaults["km_wiki_enabled"] = parser.getboolean("KMWiki", "enabled", fallback=False)
-                defaults["km_wiki_raw_dir"] = parser.get("KMWiki", "raw_dir", fallback="D:/km_wiki/raw")
+                defaults["km_wiki_enabled"] = parser.getboolean("KMWiki", "enabled", fallback=True)
+                defaults["km_wiki_raw_dir"] = parser.get("KMWiki", "raw_dir", fallback="D:/km_wiki/Minutes/raw")
         except Exception as exc:
             logger.warning(f"讀取 config.ini 失敗: {exc}")
 
@@ -334,18 +336,14 @@ def run_pipeline(
     print(f"[*] 逐字稿存檔:     {t_file.resolve()}")
     print(f"[*] 會議紀錄存檔:   {s_file.resolve()}")
 
-    # 7. 可選：KM Wiki 自動同步
+    # 7. 可選：KM Wiki 自動同步 (Minutes 知識庫 raw 檔區)
     if km_wiki_enabled:
-        km_dir = Path(km_wiki_raw_dir)
-        try:
-            today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-            km_target_dir = km_dir / today_str
-            km_target_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(t_file, km_target_dir / t_file.name)
-            shutil.copy2(s_file, km_target_dir / s_file.name)
-            print(f"[*] 已同步複製至 KM Wiki raw 目錄: {km_target_dir.resolve()}")
-        except Exception as exc:
-            print(f"[警告] KM Wiki 同步失敗 (不影響本機存檔): {exc}")
+        km_service = KMWikiService(enabled=True, raw_dir=km_wiki_raw_dir, date_subfolder=True)
+        res = km_service.sync_files(transcript_path=t_file, summary_path=s_file)
+        if res.get("synced"):
+            print(f"[*] 已成功同步至 KM Wiki Minutes raw 檔區: {res.get('target_dir')}")
+        else:
+            print(f"[警告] KM Wiki 同步失敗 (不影響本機存檔): {res.get('error')}")
 
     elapsed = time.monotonic() - t_start
     print(f"[*] 總耗時: {elapsed:.2f} 秒")
