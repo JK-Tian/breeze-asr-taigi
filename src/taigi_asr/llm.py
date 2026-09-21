@@ -3,6 +3,8 @@
 本模組提供針對相容 OpenAI / vLLM API (如 http://192.168.1.100:8002/v1) 的客戶端：
 1. 支援透過 GET /v1/models 自動動態查詢伺服器正在運行的模型名稱。
 2. 階段一：語意錯別字校正 (correct_transcript)，校正同音錯字並保留講者時間標籤。
+   - 長逐字稿自動分段 (chunked correction)，以 ThreadPoolExecutor 並行呼叫 LLM，
+     並於合併時去除重疊行以確保完整性。
 3. 階段二：四區塊結構化會議記錄生成 (generate_meeting_minutes)。
 4. 思考模型標籤 (<think>...</think>) 之自動解析與徹底過濾。
 5. 連線超時與異常時之 Graceful Degradation (優雅降級) 機制。
@@ -15,6 +17,7 @@ import logging
 import re
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -84,6 +87,117 @@ def clean_think_tags(content: Optional[str]) -> str:
     cleaned = re.sub(r"<think>.*$", "", cleaned, flags=re.DOTALL)
 
     return cleaned.strip()
+
+
+# ─── 逐字稿分段 (Chunked Transcript) ──────────────────────────────────────
+
+# 匹配逐字稿行首的 SPEAKER 標籤，用於偵測講者邊界
+_SPEAKER_RE = re.compile(r"\[SPEAKER_\d+\]")
+
+
+def _extract_speaker(line: str) -> Optional[str]:
+    """從逐字稿行中提取 SPEAKER 標籤。
+
+    Args:
+        line: 單行逐字稿文字。
+
+    Returns:
+        SPEAKER 標籤字串；若該行無標籤則回傳 None。
+    """
+    m = _SPEAKER_RE.search(line)
+    return m.group(0) if m else None
+
+
+def chunk_transcript(
+    transcript: str,
+    max_lines: int = 50,
+    overlap_lines: int = 3,
+) -> List[str]:
+    """將逐字稿按行數分段，確保不在同一 SPEAKER 段落中間截斷。
+
+    分段策略：
+    1. 以 max_lines 為目標長度逐行累積。
+    2. 當累積行數達到 max_lines 時，尋找最近的 SPEAKER 切換點作為分段邊界。
+       若往回找不到（整段同一講者），則直接在 max_lines 處截斷。
+    3. 相鄰 chunk 之間重疊 overlap_lines 行，提供上下文語境給 LLM。
+
+    Args:
+        transcript: 完整逐字稿文字。
+        max_lines: 每段最大行數（預設 50）。
+        overlap_lines: 相鄰段重疊行數（預設 3）。
+
+    Returns:
+        分段後的逐字稿字串列表。
+    """
+    lines = transcript.splitlines()
+    total = len(lines)
+
+    if total <= max_lines:
+        return [transcript]
+
+    chunks: List[str] = []
+    start = 0
+
+    while start < total:
+        end = min(start + max_lines, total)
+
+        # 若尚未到達文件末尾，向回搜尋最近的 SPEAKER 切換點
+        if end < total:
+            cut = end
+            current_speaker = _extract_speaker(lines[end - 1]) if end > 0 else None
+            # 從 end 往回尋找不同講者的邊界
+            for i in range(end - 1, start, -1):
+                sp = _extract_speaker(lines[i])
+                if sp and sp != current_speaker:
+                    cut = i + 1
+                    break
+            end = cut
+
+        chunk_lines = lines[start:end]
+
+        # 若不是最後一段，附加 overlap_lines 行
+        if end < total:
+            overlap_end = min(end + overlap_lines, total)
+            chunk_lines = lines[start:overlap_end]
+
+        chunks.append("\n".join(chunk_lines))
+        start = end
+
+    return chunks
+
+
+def _merge_corrected_chunks(
+    corrected_chunks: List[str],
+    overlap_lines: int,
+) -> str:
+    """合併分段校正結果，去除重疊區域的重複行。
+
+    去重策略：每個 chunk（除最後一個之外）的末尾 overlap_lines 行
+    會與下一個 chunk 的開頭重疊，合併時截除前一個 chunk 的尾部重疊區域。
+
+    Args:
+        corrected_chunks: 各段校正後的文字列表。
+        overlap_lines: 重疊行數。
+
+    Returns:
+        合併去重後的完整逐字稿。
+    """
+    if not corrected_chunks:
+        return ""
+    if len(corrected_chunks) == 1:
+        return corrected_chunks[0]
+
+    merged_lines: List[str] = []
+    for idx, chunk in enumerate(corrected_chunks):
+        lines = chunk.splitlines()
+        if idx < len(corrected_chunks) - 1:
+            # 非最後一段：截除末尾 overlap 行（下一段開頭已包含這些行）
+            merged_lines.extend(lines[:-overlap_lines] if overlap_lines > 0 else lines)
+        else:
+            # 最後一段：保留全部行
+            merged_lines.extend(lines)
+
+    return "\n".join(merged_lines)
 
 
 class LLMClient:
@@ -196,13 +310,22 @@ class LLMClient:
         return self._chat_completion(prompt, temperature=temperature)
 
     def correct_transcript(
-        self, raw_transcript: str, prompt_template: Optional[str] = None
+        self,
+        raw_transcript: str,
+        prompt_template: Optional[str] = None,
+        chunk_max_lines: int = 50,
+        chunk_overlap_lines: int = 3,
     ) -> str:
         """將原始逐字稿送交模型進行語意錯別字與專有名詞校正。
+
+        長逐字稿（超過 chunk_max_lines 行）自動分段並行校正，
+        合併時去除重疊行以確保完整性。
 
         Args:
             raw_transcript: ASR 轉出的原始逐字稿。
             prompt_template: 可選的自訂校正提示詞。
+            chunk_max_lines: 每段最大行數（預設 50）。
+            chunk_overlap_lines: 相鄰段重疊行數（預設 3）。
 
         Returns:
             校正後之逐字稿全文；若連線失敗或異常，自動降級回退為原始逐字稿以確保資料不遺失。
@@ -211,19 +334,93 @@ class LLMClient:
             logger.info("輸入逐字稿為空，略過錯別字校正。")
             return ""
 
+        line_count = len(raw_transcript.strip().splitlines())
         base_prompt = prompt_template or DEFAULT_CORRECTION_PROMPT
-        full_prompt = f"{base_prompt}\n{raw_transcript}"
 
-        logger.info("開始執行逐字稿語意錯別字校正...")
-        try:
-            corrected = self._chat_completion(full_prompt, temperature=0.2)
-            if not corrected.strip():
-                logger.warning("模型回傳空白校正內容，降級保留原始逐字稿。")
+        # 短逐字稿：走原始單次校正路徑
+        if line_count <= chunk_max_lines:
+            full_prompt = f"{base_prompt}\n{raw_transcript}"
+            logger.info("開始執行逐字稿語意錯別字校正（單次模式）...")
+            try:
+                corrected = self._chat_completion(full_prompt, temperature=0.2)
+                if not corrected.strip():
+                    logger.warning("模型回傳空白校正內容，降級保留原始逐字稿。")
+                    return raw_transcript
+                return corrected
+            except Exception as exc:
+                logger.error(f"錯別字校正請求失敗 ({exc})，優雅降級採用原始逐字稿。")
                 return raw_transcript
-            return corrected
-        except Exception as exc:
-            logger.error(f"錯別字校正請求失敗 ({exc})，優雅降級採用原始逐字稿。")
-            return raw_transcript
+
+        # 長逐字稿：分段並行校正
+        return self._correct_transcript_chunked(
+            raw_transcript,
+            base_prompt=base_prompt,
+            chunk_max_lines=chunk_max_lines,
+            chunk_overlap_lines=chunk_overlap_lines,
+        )
+
+    def _correct_transcript_chunked(
+        self,
+        raw_transcript: str,
+        base_prompt: str,
+        chunk_max_lines: int,
+        chunk_overlap_lines: int,
+    ) -> str:
+        """將長逐字稿分段並行送交 LLM 校正，合併去重後回傳完整結果。
+
+        Args:
+            raw_transcript: 完整原始逐字稿。
+            base_prompt: 校正提示詞模板。
+            chunk_max_lines: 每段最大行數。
+            chunk_overlap_lines: 重疊行數。
+
+        Returns:
+            合併去重後之校正逐字稿。
+        """
+        chunks = chunk_transcript(
+            raw_transcript,
+            max_lines=chunk_max_lines,
+            overlap_lines=chunk_overlap_lines,
+        )
+        total = len(chunks)
+        logger.info(
+            f"長逐字稿分段校正：共 {total} 段 "
+            f"(max_lines={chunk_max_lines}, overlap={chunk_overlap_lines})，以並行模式執行..."
+        )
+
+        # 索引 -> 校正結果的字典，用於保持順序
+        corrected_map: Dict[int, str] = {}
+
+        def _correct_one(idx: int, chunk: str) -> tuple:
+            """校正單一段落，失敗時降級回傳原始文字。"""
+            prompt = f"{base_prompt}\n{chunk}"
+            try:
+                result = self._chat_completion(prompt, temperature=0.2)
+                if not result.strip():
+                    logger.warning(f"分段校正 [{idx + 1}/{total}]：模型回傳空白，降級保留原始。")
+                    return idx, chunk
+                logger.info(f"分段校正 [{idx + 1}/{total}]：完成。")
+                return idx, result
+            except Exception as exc:
+                logger.warning(f"分段校正 [{idx + 1}/{total}] 失敗 ({exc})，降級保留原始。")
+                return idx, chunk
+
+        # 並行送出所有段落，最多 4 條並行
+        with ThreadPoolExecutor(max_workers=min(total, 4)) as executor:
+            futures = {
+                executor.submit(_correct_one, i, chunk): i
+                for i, chunk in enumerate(chunks)
+            }
+            for future in as_completed(futures):
+                idx, result = future.result()
+                corrected_map[idx] = result
+
+        # 按原始順序組裝並合併去重
+        ordered = [corrected_map[i] for i in range(total)]
+        merged = _merge_corrected_chunks(ordered, overlap_lines=chunk_overlap_lines)
+
+        logger.info(f"分段校正合併完成，共 {len(merged.splitlines())} 行。")
+        return merged
 
     def _build_minutes_prompt(
         self,

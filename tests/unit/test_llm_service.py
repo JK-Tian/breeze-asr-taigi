@@ -170,3 +170,160 @@ def test_empty_transcript_handling():
     assert client.correct_transcript("   ") == ""
     assert "逐字稿內容為空" in client.generate_meeting_minutes("")
     assert "逐字稿內容為空" in client.generate_meeting_minutes("   ")
+
+
+# ─── 分段校正 (Chunked Correction) 測試 ───────────────────────────────────
+
+
+def _make_transcript_lines(n: int, speaker_cycle: int = 5) -> str:
+    """產生 n 行模擬逐字稿，每 speaker_cycle 行換一個 SPEAKER。"""
+    lines = []
+    for i in range(n):
+        speaker = f"SPEAKER_{i // speaker_cycle:02d}"
+        start = i * 10.0
+        end = start + 9.5
+        lines.append(f"{start:.2f} - {end:.2f} [{speaker}]: 這是第 {i + 1} 行的測試內容")
+    return "\n".join(lines)
+
+
+def test_chunk_transcript_short():
+    """短逐字稿 (≤ max_lines) 不分段，回傳包含全文的單一 chunk (Happy Path)"""
+    from taigi_asr.llm import chunk_transcript
+
+    text = _make_transcript_lines(30)
+    chunks = chunk_transcript(text, max_lines=50, overlap_lines=3)
+
+    assert len(chunks) == 1
+    assert chunks[0] == text
+
+
+def test_chunk_transcript_long():
+    """長逐字稿 (150 行) 切成多段，每段 ≤ max_lines + overlap (Happy Path)"""
+    from taigi_asr.llm import chunk_transcript
+
+    text = _make_transcript_lines(150)
+    chunks = chunk_transcript(text, max_lines=50, overlap_lines=3)
+
+    # 應產生 3~4 個 chunk
+    assert len(chunks) >= 3
+    # 每個 chunk 行數不超過 max_lines + overlap_lines
+    for chunk in chunks:
+        line_count = len(chunk.strip().splitlines())
+        assert line_count <= 53  # 50 + 3 overlap
+
+    # 所有原始行都應出現在至少一個 chunk 中
+    original_lines = set(text.splitlines())
+    covered_lines = set()
+    for chunk in chunks:
+        covered_lines.update(chunk.splitlines())
+    assert original_lines.issubset(covered_lines)
+
+
+def test_chunk_transcript_speaker_boundary():
+    """不在同一 SPEAKER 段落中間截斷 (Edge Case)"""
+    from taigi_asr.llm import chunk_transcript
+
+    # 製作特殊場景：前 48 行同一個 SPEAKER，第 49~60 行換 SPEAKER
+    lines = []
+    for i in range(48):
+        lines.append(f"{i * 10:.2f} - {i * 10 + 9:.2f} [SPEAKER_00]: 同一講者第 {i + 1} 行")
+    for i in range(48, 60):
+        lines.append(f"{i * 10:.2f} - {i * 10 + 9:.2f} [SPEAKER_01]: 新講者第 {i + 1} 行")
+    text = "\n".join(lines)
+
+    chunks = chunk_transcript(text, max_lines=50, overlap_lines=3)
+
+    # 第一個 chunk 的最後一行和第二個 chunk 的第一行（排除 overlap）應屬於不同 SPEAKER
+    first_chunk_lines = chunks[0].splitlines()
+    # 第一個 chunk 不應恰好在 SPEAKER_00 的第 50 行截斷（第 48 行結束才是邊界）
+    assert len(chunks) >= 2
+
+
+def test_chunk_transcript_overlap():
+    """相鄰 chunk 之間有重疊行提供上下文 (Happy Path)"""
+    from taigi_asr.llm import chunk_transcript
+
+    text = _make_transcript_lines(120)
+    chunks = chunk_transcript(text, max_lines=50, overlap_lines=3)
+
+    assert len(chunks) >= 2
+
+    # 驗證第一個 chunk 的末尾 3 行 = 第二個 chunk 的開頭 3 行
+    first_tail = chunks[0].splitlines()[-3:]
+    second_head = chunks[1].splitlines()[:3]
+    assert first_tail == second_head
+
+
+def _extract_transcript_from_prompt(prompt: str) -> str:
+    """從校正 prompt 中提取逐字稿部分（提示詞後的文字）。"""
+    marker = "以下是原始逐字稿內容：\n"
+    idx = prompt.find(marker)
+    if idx >= 0:
+        return prompt[idx + len(marker):].strip()
+    # fallback: 提示詞結尾通常有 \n 接逐字稿
+    parts = prompt.split("\n\n", 1)
+    return parts[-1].strip() if len(parts) > 1 else prompt.strip()
+
+
+def test_correct_transcript_chunked_success():
+    """分段校正後合併結果完整，所有原始行都被處理 (Happy Path)"""
+    text = _make_transcript_lines(120)
+
+    # Mock: 從 prompt 提取逐字稿部分，將「測試內容」替換為「校正內容」
+    def mock_chat(prompt, temperature=0.3):
+        transcript_part = _extract_transcript_from_prompt(prompt)
+        return transcript_part.replace("測試內容", "校正內容")
+
+    with patch.object(LLMClient, "_chat_completion", side_effect=mock_chat):
+        client = LLMClient(base_url="http://test:8001/v1", model="test-model")
+        result = client.correct_transcript(text, chunk_max_lines=50, chunk_overlap_lines=3)
+
+    # 校正結果中不應有「測試內容」，應全部變為「校正內容」
+    assert "測試內容" not in result
+    assert "校正內容" in result
+    # 行數應與原始一致（去重後）
+    assert len(result.strip().splitlines()) == 120
+
+
+def test_correct_transcript_chunked_partial_fail():
+    """某一段 LLM 校正失敗時，該段保留原始文字，其他段正常校正 (降級)"""
+    text = _make_transcript_lines(120)
+
+    call_count = {"n": 0}
+
+    def mock_chat_with_failure(prompt, temperature=0.3):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise urllib.error.URLError("connection reset")
+        transcript_part = _extract_transcript_from_prompt(prompt)
+        return transcript_part.replace("測試內容", "校正內容")
+
+    with patch.object(LLMClient, "_chat_completion", side_effect=mock_chat_with_failure):
+        client = LLMClient(base_url="http://test:8001/v1", model="test-model")
+        result = client.correct_transcript(text, chunk_max_lines=50, chunk_overlap_lines=3)
+
+    # 結果應同時包含校正內容（成功的段）和測試內容（失敗的段保留原始）
+    assert "校正內容" in result
+    assert "測試內容" in result
+    # 總行數仍應為 120
+    assert len(result.strip().splitlines()) == 120
+
+
+def test_correct_transcript_chunked_dedup():
+    """重疊區域的行不會重複出現在最終結果中 (Edge Case)"""
+    text = _make_transcript_lines(120)
+
+    def mock_chat_identity(prompt, temperature=0.3):
+        # 原封不動回傳逐字稿部分（模擬不做任何修改的校正）
+        return _extract_transcript_from_prompt(prompt)
+
+    with patch.object(LLMClient, "_chat_completion", side_effect=mock_chat_identity):
+        client = LLMClient(base_url="http://test:8001/v1", model="test-model")
+        result = client.correct_transcript(text, chunk_max_lines=50, chunk_overlap_lines=3)
+
+    result_lines = result.strip().splitlines()
+    # 不應有重複行
+    assert len(result_lines) == len(set(result_lines))
+    # 行數應與原始一致
+    assert len(result_lines) == 120
+

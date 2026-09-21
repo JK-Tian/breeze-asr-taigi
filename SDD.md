@@ -184,3 +184,51 @@ parameters:
     "available_space_mb": 51200
   }
   ```
+
+---
+
+## 7. 逐字稿分段校正 (Chunked Transcript Correction)
+
+### 7.1 問題背景
+
+長時間會議（如 2 小時以上）產生的逐字稿可能超過 800 行 / 150KB，一次性送入 LLM 進行錯別字校正時，會因超出模型有效上下文窗口而導致校正失敗、輸出截斷或請求超時，觸發 Graceful Degradation 回退原始文字。
+
+### 7.2 分段策略
+
+```mermaid
+flowchart LR
+    Input["原始逐字稿\n(N 行)"] --> Check{"N > max_lines?"}
+    Check -- "≤ 50 行" --> Single["單次校正\n(原路徑)"]
+    Check -- "> 50 行" --> Chunk["chunk_transcript()\n按 SPEAKER 邊界分段"]
+    Chunk --> C1["Chunk 1\n(~50行 + 3行 overlap)"]
+    Chunk --> C2["Chunk 2\n(~50行 + 3行 overlap)"]
+    Chunk --> CN["Chunk N\n(剩餘行)"]
+    C1 --> P["ThreadPoolExecutor\n(max_workers=4)"]
+    C2 --> P
+    CN --> P
+    P --> Merge["_merge_corrected_chunks()\n截除 overlap 去重"]
+    Merge --> Output["校正後完整逐字稿"]
+```
+
+### 7.3 核心函式
+
+| 函式 | 位置 | 職責 |
+|---|---|---|
+| `chunk_transcript()` | `src/taigi_asr/llm.py` | 純函式，按行數分段並保留 SPEAKER 段落完整性 |
+| `_extract_speaker()` | `src/taigi_asr/llm.py` | 從逐字稿行中提取 `[SPEAKER_XX]` 標籤 |
+| `_merge_corrected_chunks()` | `src/taigi_asr/llm.py` | 合併校正結果，截除非最後段的尾部 overlap |
+| `_correct_transcript_chunked()` | `LLMClient` 方法 | 分段 → 並行校正 → 合併，含 per-chunk 降級 |
+| `correct_transcript()` | `LLMClient` 方法 | 入口，自動路由短/長逐字稿 |
+
+### 7.4 設定參數 (`config.ini [Correction]`)
+
+| 參數 | 預設值 | 說明 |
+|---|---|---|
+| `chunk_max_lines` | 50 | 每段最大行數（建議 40~80） |
+| `chunk_overlap_lines` | 3 | 相鄰段重疊行數，提供上下文（建議 2~5） |
+
+### 7.5 降級策略
+
+- **單一段落校正失敗**：該段保留原始文字，其他段正常校正，不影響整體流程
+- **全部段落校正失敗**：等效原始降級行為，回傳未校正逐字稿
+- **對外介面不變**：`correct_transcript()` 簽名向下相容，新增參數皆有預設值
