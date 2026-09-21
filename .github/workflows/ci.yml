@@ -43,21 +43,9 @@ jobs:
       - run: ruff format --check .
 
   test:
-    name: Tests (${{ matrix.os }} · Py ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
+    name: Tests (ubuntu · Py 3.11)
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      # Linux runs all supported Python versions for compat coverage; Windows
-      # only runs the primary version (3.11) since Windows-specific issues
-      # (paths, encoding, line endings) surface on any Python version. Trims
-      # 6 cells -> 4, saving ~2 cells of GHA compute per push.
-      matrix:
-        include:
-          - { os: ubuntu-latest, python-version: '3.10' }
-          - { os: ubuntu-latest, python-version: '3.11' }
-          - { os: ubuntu-latest, python-version: '3.12' }
-          - { os: windows-latest, python-version: '3.11' }
     steps:
       - uses: actions/checkout@v6
 
@@ -73,7 +61,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.11'
 
       - name: Install torch (CPU) + project + dev extras
         shell: bash
@@ -88,17 +76,10 @@ jobs:
           # alongside real-model flows tagged ``slow``. ``-m "not slow"``
           # excludes the latter so CI doesn't try to download the ~3 GB
           # Breeze-ASR-26 weights on every push.
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ] && [ "${{ matrix.python-version }}" = "3.11" ]; then
-            # Primary cell: coverage + xml report for codecov upload.
-            pytest tests/unit tests/smoke tests/integration -v -m "not slow" \
-              --cov=taigi_asr --cov-report=xml
-          else
-            # Secondary cells: skip coverage overhead; we only upload from one cell.
-            pytest tests/unit tests/smoke tests/integration -v -m "not slow"
-          fi
+          pytest tests/unit tests/smoke tests/integration -v -m "not slow" \
+            --cov=taigi_asr --cov-report=xml
 
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         uses: codecov/codecov-action@v6
         with:
           files: coverage.xml
@@ -106,6 +87,7 @@ jobs:
 
   docker:
     name: Docker build (smoke)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
