@@ -36,7 +36,7 @@ from taigi_asr.minutes import (
     sanitize_filename,
     save_meeting_outputs,
 )
-from taigi_asr.vision import KeyframeExtractor, VLMClient
+from taigi_asr.vision import KeyframeExtractor, VLMClient, is_video_file
 
 logger = logging.getLogger("transcription_usecase")
 
@@ -155,7 +155,7 @@ def process_audio_task(task_id: str, file_path: str):
         raw_media_path = file_path
         extractor = KeyframeExtractor()
 
-        if extractor.is_video_file(raw_media_path):
+        if is_video_file(raw_media_path):
             logger.info(f"[{task_id}] 偵測到影片檔案，啟動多模態關鍵幀擷取與 VLM 視覺分析...")
             keyframes = []
             try:

@@ -126,6 +126,7 @@ def format_obsidian_meeting_notes(
     media_filename: Optional[str] = None,
     title: Optional[str] = None,
     dt: Optional[datetime.datetime] = None,
+    topic: str = "會議紀錄",
 ) -> str:
     """將會議記錄 Markdown 包裝為符合 Obsidian PKM YAML Frontmatter 格式的標準筆記。
 
@@ -171,6 +172,7 @@ def format_obsidian_meeting_notes(
         "status : inbox\n"
         "tags : \n"
         "Topics : \n"
+        f"  - {topic}\n"
         "Type : \n"
         "  - 📝/✨\n"
         "---"
@@ -237,8 +239,25 @@ def save_meeting_outputs(
 
     id_header = f"- **任務 ID**: {task_id}\n\n" if task_id else "\n"
 
-    # 1. 寫入逐字稿
+    # 1. 寫入逐字稿 (加入與會議紀錄相同規範的 YAML Frontmatter)
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    transcript_frontmatter = (
+        "---\n"
+        f"title : {title} - 會議逐字稿\n"
+        "description : \n"
+        f"date : {date_str}\n"
+        "aliases : []\n"
+        "status : inbox\n"
+        "tags : \n"
+        "Topics : \n"
+        "  - 逐字稿\n"
+        "Type : \n"
+        "  - 📝/✨\n"
+        "---\n\n"
+    )
+    
     transcript_content = (
+        f"{transcript_frontmatter}"
         f"# {title} - 會議逐字稿\n\n"
         f"- **日期**: {today_str}\n"
         f"{id_header}"
@@ -252,6 +271,7 @@ def save_meeting_outputs(
         summary=summary,
         media_filename=media_filename,
         title=title,
+        topic="會議紀錄",
     )
     summary_file.write_text(obsidian_summary, encoding="utf-8")
 

@@ -77,6 +77,7 @@ def test_format_obsidian_meeting_notes_with_video_file():
         "status : inbox\n"
         "tags : \n"
         "Topics : \n"
+        "  - 會議紀錄\n"
         "Type : \n"
         "  - 📝/✨\n"
         "---"
